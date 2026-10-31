@@ -34,11 +34,17 @@ namespace packsim {
 class PortReachability;
 
 struct FlexNodeParams {
-  SimContext* simCtx;
+  // Simulation context the node runs in; must be set: FlexNode dereferences it
+  // on construction.
+  SimContext* simCtx{nullptr};
   const std::string& name;
   const FlexDeviceId& flexId;
-  const packsim::thrift::LpmTableSpec* lpmTable;
-  const packsim::thrift::FlexTopology* topo;
+  // Longest-prefix-match (LPM) table the node routes by; null only on a node
+  // that never routes a packet.
+  const packsim::thrift::LpmTableSpec* lpmTable{nullptr};
+  // Topology the node belongs to; null only on a node that never routes a
+  // packet.
+  const packsim::thrift::FlexTopology* topo{nullptr};
   // Reachability tracer over topo, shared by every endpoint (FlexTopology owns
   // it); null for nodes that never trace reachability.
   const PortReachability* portReachability{nullptr};
