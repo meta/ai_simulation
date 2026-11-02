@@ -21,6 +21,7 @@
 #include <thrift/lib/cpp2/FieldRef.h>
 
 #include "packsim/kernel/data-rate.h"
+#include "packsim/kernel/duration.h"
 #include "packsim/link-layer/cbfc/cbfc.h"
 #include "packsim/link-layer/cbfc/nic-rx-credit-bridge.h"
 #include "packsim/link-layer/eth-channel.h"
@@ -112,12 +113,14 @@ void EthernetPort::enablePeriodicStats(
     const uint64_t intervalNs) {
   name_ = name;
   if (intervalNs == 0) {
-    // `updatePeriodicStats` reschedules itself at this interval, so running it
-    // at zero would be an unbounded zero-delay event loop.
     return;
   }
-  statsIntervalNs_ = intervalNs;
   updatePeriodicStats();
+  statsTicker_.emplace(
+      *simCtx_,
+      Ticker::Options{.period = Duration::fromNs(intervalNs), .onTick = [this] {
+                        updatePeriodicStats();
+                      }});
 }
 
 void EthernetPort::updatePeriodicStats() {
@@ -139,8 +142,6 @@ void EthernetPort::updatePeriodicStats() {
         rxBytes - prevRxBytes_);
     prevRxBytes_ = rxBytes;
   }
-  simCtx_->schedule(
-      Time::fromNs(statsIntervalNs_), &EthernetPort::updatePeriodicStats, this);
 }
 
 /**

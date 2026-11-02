@@ -25,6 +25,7 @@
 #include "packsim/kernel/data-rate.h"
 #include "packsim/kernel/device-id.h"
 #include "packsim/kernel/sim-context.h"
+#include "packsim/kernel/ticker.h"
 #include "packsim/kernel/time.h"
 #include "packsim/link-layer/eth-channel.h"
 #include "packsim/link-layer/pfc-controller.h"
@@ -298,7 +299,8 @@ class EthernetPort : public TxPacketSource {
   }
 
   // Start the periodic byte-count trace, which counts the frames of every
-  // class of service. An `intervalNs` of 0 leaves it off.
+  // class of service: one sample now, then one every interval. An
+  // `intervalNs` of 0 leaves it off.
   void enablePeriodicStats(const std::string& name, uint64_t intervalNs);
 
   void setChannelState(ChannelState state);
@@ -620,13 +622,14 @@ class EthernetPort : public TxPacketSource {
   bool hasTxQueueSpaceSubscriber_{false};
 
   void updatePeriodicStats();
-  uint64_t statsIntervalNs_{0};
   std::string name_;
   // Bytes sent, summed over every class of service, at the last trace sample.
   uint64_t prevTxBytes_{0};
   // Bytes received, summed over every class of service, at the last trace
   // sample.
   uint64_t prevRxBytes_{0};
+  // Runs updatePeriodicStats; empty while the trace is off.
+  std::optional<Ticker> statsTicker_;
 
   FlexNode* node_{};
   SimContext* const simCtx_{nullptr};

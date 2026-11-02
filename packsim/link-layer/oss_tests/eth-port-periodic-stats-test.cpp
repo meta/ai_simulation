@@ -127,4 +127,48 @@ TEST_F(
       frameBytes);
 }
 
+TEST_F(
+    EthernetPortPeriodicStatsTest,
+    TrafficAfterEnablingIsTracedOneIntervalLater) {
+  const auto name = fmt::format("TXBytes_sender_Port_{}", kSenderPortNum);
+  sender_->enablePeriodicStats("sender", kTraceIntervalNs);
+
+  sender_->send(makeCs1Frame());
+  scheduler_.run(Time::fromNs(2 * kTraceIntervalNs));
+
+  const auto& traces = simCtx_.tracer.traces();
+  ASSERT_TRUE(traces.contains(name));
+  ASSERT_EQ(traces.at(name).size(), 1);
+  EXPECT_EQ(traces.at(name).front().timeNs, kTraceIntervalNs);
+}
+
+TEST_F(EthernetPortPeriodicStatsTest, ZeroIntervalLeavesTheTraceOff) {
+  sender_->enablePeriodicStats("sender", /*intervalNs=*/0);
+
+  sender_->send(makeCs1Frame());
+  scheduler_.run(Time::fromNs(2 * kTraceIntervalNs));
+
+  EXPECT_FALSE(simCtx_.tracer.traces().contains(
+      fmt::format("TXBytes_sender_Port_{}", kSenderPortNum)));
+}
+
+TEST_F(
+    EthernetPortPeriodicStatsTest,
+    BytesSentBeforeEnablingAreTracedWhenEnabled) {
+  const auto name = fmt::format("TXBytes_sender_Port_{}", kSenderPortNum);
+  auto frame = makeCs1Frame();
+  const auto frameBytes = static_cast<double>(frame->getSize());
+  sender_->send(frame);
+  scheduler_.run(Time::fromNs(kTraceIntervalNs));
+
+  const uint64_t enabledAtNs = simCtx_.nowNs();
+  sender_->enablePeriodicStats("sender", kTraceIntervalNs);
+
+  const auto& traces = simCtx_.tracer.traces();
+  ASSERT_TRUE(traces.contains(name));
+  ASSERT_EQ(traces.at(name).size(), 1);
+  EXPECT_EQ(traces.at(name).front().timeNs, enabledAtNs);
+  EXPECT_DOUBLE_EQ(traces.at(name).front().value, frameBytes);
+}
+
 } // namespace packsim
