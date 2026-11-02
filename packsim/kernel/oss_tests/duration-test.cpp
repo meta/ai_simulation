@@ -6,6 +6,7 @@
  */
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 
@@ -38,6 +39,50 @@ static_assert(
 static_assert(
     Duration::fromUs(1) - Duration::fromNs(1) == Duration::fromNs(999));
 static_assert(Duration::fromPs(999) < Duration::fromNs(1));
+
+// A floating-point length compiles only with a rounding rule.
+template <typename... TArgs>
+concept CanMakeFromUs = requires(TArgs... args) { Duration::fromUs(args...); };
+struct NotARoundingRule {};
+static_assert(CanMakeFromUs<uint64_t>);
+static_assert(!CanMakeFromUs<double>);
+static_assert(!CanMakeFromUs<float>);
+static_assert(CanMakeFromUs<double, Rounding::TruncateToUnit>);
+static_assert(CanMakeFromUs<float, Rounding::TruncateToUnit>);
+static_assert(CanMakeFromUs<double, Rounding::NearestFs>);
+static_assert(CanMakeFromUs<double, Rounding::CeilFs>);
+static_assert(!CanMakeFromUs<double, NotARoundingRule>);
+// The rule is named at the call: a bare `{}` does not make one.
+template <typename T>
+concept CopyListInitializableFromEmptyBraces =
+    requires(void (*takesT)(T)) { takesT({}); };
+static_assert(!CopyListInitializableFromEmptyBraces<Rounding::TruncateToUnit>);
+static_assert(!CopyListInitializableFromEmptyBraces<Rounding::NearestFs>);
+static_assert(!CopyListInitializableFromEmptyBraces<Rounding::CeilFs>);
+
+// The rounding works in constant expressions.
+static_assert(
+    Duration::fromUs(1.7, Rounding::TruncateToUnit{}) == Duration::fromUs(1));
+static_assert(
+    Duration::fromUs(1.7, Rounding::NearestFs{}) == Duration(1'700'000'000));
+static_assert(
+    Duration::fromUs(1.7, Rounding::CeilFs{}) == Duration(1'700'000'000));
+
+// Lengths whose scaling to femtoseconds is exact, so each rule's result is
+// known without floating-point slack.
+// 2^-31 us: 0.4656612873077393 fs.
+constexpr double kUnderHalfFsInUs = 0x1p-31;
+// 1.5 * 2^-9 us: 2929687.5 fs.
+constexpr double kHalfwayFsInUs = 0x1.8p-9;
+// 2305843011 * 2^-9 us: 4503599630859375 fs, odd and above 2^52.
+constexpr double kOddAbove2To52FsInUs = 2'305'843'011.0 / 512;
+constexpr uint64_t kOddAbove2To52Fs = 4'503'599'630'859'375;
+// 1e7 us: 1e16 fs, above 2^53, where every double is whole.
+constexpr double kAbove2To53FsInUs = 1e7;
+constexpr uint64_t kAbove2To53Fs = 10'000'000'000'000'000;
+
+// The exclusive bound of `fromUs(double, mode)`: whole microseconds in 2^64 fs.
+static_assert(Duration::getUsUpperBound() == 18'446'744'073);
 
 TEST(DurationTest, DefaultIsZero) {
   EXPECT_TRUE(Duration().isZero());
@@ -138,5 +183,136 @@ TEST(DurationTest, BetweenThrowsWhenEndIsBeforeStart) {
       ThrowsMessage<std::runtime_error>(
           HasSubstr("Time difference is negative")));
 }
+
+TEST(DurationTest, TruncateToUnitDropsTheFractionOfAMicrosecond) {
+  EXPECT_EQ(
+      Duration::fromUs(1.7, Rounding::TruncateToUnit{}), Duration::fromUs(1));
+}
+
+TEST(DurationTest, TruncateToUnitOfLessThanAMicrosecondIsZero) {
+  EXPECT_TRUE(Duration::fromUs(0.5, Rounding::TruncateToUnit{}).isZero());
+}
+
+TEST(DurationTest, TruncateToUnitAcceptsAFloat) {
+  EXPECT_EQ(
+      Duration::fromUs(2.5F, Rounding::TruncateToUnit{}), Duration::fromUs(2));
+}
+
+TEST(
+    DurationTest,
+    TruncateToUnitDropsTheFractionOfALengthAbove2To52Femtoseconds) {
+  EXPECT_EQ(
+      Duration::fromUs(kOddAbove2To52FsInUs, Rounding::TruncateToUnit{}),
+      Duration::fromUs(4'503'599));
+}
+
+TEST(DurationTest, TruncateToUnitKeepsTheLargestWholeMicrosecondInRange) {
+  // 2^64 fs is 18446744073.7 us.
+  constexpr uint64_t kMaxWholeUs = 18'446'744'072;
+  EXPECT_EQ(
+      Duration::fromUs(
+          static_cast<double>(kMaxWholeUs) + 0.9, Rounding::TruncateToUnit{}),
+      Duration::fromUs(kMaxWholeUs));
+}
+
+TEST(DurationTest, NearestFsKeepsTheFractionOfAMicrosecond) {
+  EXPECT_EQ(
+      Duration::fromUs(1.7, Rounding::NearestFs{}), Duration(1'700'000'000));
+}
+
+TEST(DurationTest, NearestFsRoundsAScaledLengthJustBelowAWholeFsUp) {
+  // 1.001 us scales to 1000999999.9999999 fs.
+  EXPECT_EQ(
+      Duration::fromUs(1.001, Rounding::NearestFs{}), Duration(1'001'000'000));
+}
+
+TEST(DurationTest, NearestFsRoundsHalfAFemtosecondUp) {
+  EXPECT_EQ(
+      Duration::fromUs(kHalfwayFsInUs, Rounding::NearestFs{}),
+      Duration(2'929'688));
+}
+
+TEST(DurationTest, NearestFsRoundsLessThanHalfAFemtosecondDown) {
+  EXPECT_TRUE(
+      Duration::fromUs(kUnderHalfFsInUs, Rounding::NearestFs{}).isZero());
+}
+
+TEST(DurationTest, NearestFsKeepsAnOddCountAbove2To52Femtoseconds) {
+  // Adding 0.5 and truncating would give the next even count.
+  EXPECT_EQ(
+      Duration::fromUs(kOddAbove2To52FsInUs, Rounding::NearestFs{}),
+      Duration(kOddAbove2To52Fs));
+}
+
+TEST(DurationTest, NearestFsKeepsAWholeCountAbove2To53Femtoseconds) {
+  EXPECT_EQ(
+      Duration::fromUs(kAbove2To53FsInUs, Rounding::NearestFs{}),
+      Duration(kAbove2To53Fs));
+}
+
+TEST(DurationTest, NearestFsAcceptsAFloat) {
+  EXPECT_EQ(
+      Duration::fromUs(2.5F, Rounding::NearestFs{}), Duration(2'500'000'000));
+}
+
+TEST(DurationTest, CeilFsRoundsAFractionOfAFemtosecondUp) {
+  EXPECT_EQ(
+      Duration::fromUs(kUnderHalfFsInUs, Rounding::CeilFs{}), Duration(1));
+}
+
+TEST(DurationTest, CeilFsRoundsHalfAFemtosecondUp) {
+  EXPECT_EQ(
+      Duration::fromUs(kHalfwayFsInUs, Rounding::CeilFs{}),
+      Duration(2'929'688));
+}
+
+TEST(DurationTest, CeilFsKeepsAWholeFemtosecondCount) {
+  EXPECT_EQ(Duration::fromUs(1.0, Rounding::CeilFs{}), Duration::fromUs(1));
+}
+
+TEST(DurationTest, CeilFsKeepsAnOddCountAbove2To52Femtoseconds) {
+  EXPECT_EQ(
+      Duration::fromUs(kOddAbove2To52FsInUs, Rounding::CeilFs{}),
+      Duration(kOddAbove2To52Fs));
+}
+
+TEST(DurationTest, CeilFsKeepsAWholeCountAbove2To53Femtoseconds) {
+  EXPECT_EQ(
+      Duration::fromUs(kAbove2To53FsInUs, Rounding::CeilFs{}),
+      Duration(kAbove2To53Fs));
+}
+
+// The range check exists only in debug builds, so these are registered only
+// there; other builds report nothing skipped.
+#ifndef NDEBUG
+TEST(DurationDeathTest, NegativeMicrosecondsAbortInDebugBuilds) {
+  EXPECT_DEATH(
+      (void)Duration::fromUs(-1.0, Rounding::TruncateToUnit{}),
+      "outside \\[0, 18446744073\\)");
+}
+
+TEST(DurationDeathTest, NanMicrosecondsAbortInDebugBuilds) {
+  EXPECT_DEATH(
+      (void)Duration::fromUs(
+          std::numeric_limits<double>::quiet_NaN(), Rounding::TruncateToUnit{}),
+      "outside");
+}
+
+TEST(DurationDeathTest, NegativeMicrosecondsAbortWithNearestFsInDebugBuilds) {
+  EXPECT_DEATH((void)Duration::fromUs(-1.0, Rounding::NearestFs{}), "outside");
+}
+
+TEST(DurationDeathTest, NegativeMicrosecondsAbortWithCeilFsInDebugBuilds) {
+  EXPECT_DEATH((void)Duration::fromUs(-1.0, Rounding::CeilFs{}), "outside");
+}
+
+TEST(DurationDeathTest, MicrosecondsAtTheUpperBoundAbortInDebugBuilds) {
+  EXPECT_DEATH(
+      (void)Duration::fromUs(
+          static_cast<double>(Duration::getUsUpperBound()),
+          Rounding::TruncateToUnit{}),
+      "outside \\[0, 18446744073\\)");
+}
+#endif
 
 } // namespace packsim

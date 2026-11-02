@@ -8,12 +8,51 @@
 #pragma once
 
 #include <compare>
+#include <concepts>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <type_traits>
+
+#include <folly/Portability.h>
 
 #include "packsim/kernel/time.h"
 
 namespace packsim {
+
+/**
+ * How `Duration` turns a floating-point length into whole femtoseconds. Each
+ * rule is an empty tag passed as the second argument, e.g.
+ * `Duration::fromUs(1.7, Rounding::NearestFs{})`; the explicit default
+ * constructors reject a bare `{}`, so every call site names its rule.
+ *
+ * The femtosecond rules see the length after it is scaled to femtoseconds in
+ * double precision, so a decimal that binary cannot hold can land a hair off a
+ * whole femtosecond: 1.001 us scales to 1000999999.9999999 fs.
+ */
+struct Rounding {
+  // Drops everything below the source unit, as an implicit conversion to an
+  // integer count does: 1.7 us becomes 1 us, 0.5 us becomes 0. Keeps the
+  // results of code that converted that way.
+  struct TruncateToUnit {
+    explicit TruncateToUnit() = default;
+  };
+  // Rounds to the nearest femtosecond, halfway cases up: 1.7 us stays 1.7 us,
+  // and 1.001 us is 1001000000 fs.
+  struct NearestFs {
+    explicit NearestFs() = default;
+  };
+  // Rounds up to the next whole femtosecond, so the result is never shorter
+  // than the scaled length, e.g. for a timeout that must not fire early.
+  struct CeilFs {
+    explicit CeilFs() = default;
+  };
+};
+
+// The rounding rules `Duration`'s floating-point factories accept.
+template <typename T>
+concept RoundingMode = std::same_as<T, Rounding::TruncateToUnit> ||
+    std::same_as<T, Rounding::NearestFs> || std::same_as<T, Rounding::CeilFs>;
 
 /**
  * A span of simulated time in femtoseconds, never negative. `Time` is a point
@@ -22,8 +61,10 @@ namespace packsim {
  * where the other is meant does not compile. They meet only through
  * `Time + Duration`, `Time - Duration` and `Duration::between`.
  *
- * Factories and addition wrap modulo 2^64 fs (about 5.1 hours), as `Time`'s
- * do. A subtraction that would go below zero throws.
+ * The integer factories and addition wrap modulo 2^64 fs (about 5.1 hours), as
+ * `Time`'s do. A subtraction that would go below zero throws. A floating-point
+ * length must name how it rounds (see `Rounding`); without a rule it does not
+ * compile, and it must lie in the range its factory documents.
  *
  * Example usage:
  *
@@ -79,6 +120,29 @@ class Duration {
    */
   static constexpr Duration fromUs(const uint64_t us) noexcept {
     return Duration(us * kFsPerUs);
+  }
+
+  /**
+   * Duration of `us` microseconds, rounded by `mode`.
+   *
+   * @param us    Length in microseconds, in [0, getUsUpperBound()), e.g. 300.0.
+   *              Checked in debug builds, and in a constant expression a
+   *              negative or NaN value fails to compile. Other builds do not
+   *              check; a value outside the range is undefined behaviour, so
+   *              validate it where it enters, e.g. at config load.
+   * @param mode  How to round, e.g. `Rounding::NearestFs{}`.
+   *
+   * @return      The rounded length as a Duration.
+   */
+  template <std::floating_point TFloat, RoundingMode TMode>
+  static constexpr Duration fromUs(const TFloat us, const TMode mode) noexcept {
+    return fromUnits<kFsPerUs>(us, mode);
+  }
+
+  // Exclusive upper bound of the microseconds `fromUs(double, mode)` accepts:
+  // 18446744073, the whole microseconds in 2^64 fs.
+  static constexpr uint64_t getUsUpperBound() noexcept {
+    return std::numeric_limits<uint64_t>::max() / kFsPerUs;
   }
 
   /**
@@ -233,6 +297,19 @@ class Duration {
     return lhs - Time(rhs.durationFs_);
   }
 
+  // A floating-point length must name its rounding rule; these would truncate
+  // it silently.
+  template <std::floating_point TFloat>
+  static Duration fromPs(TFloat) = delete;
+  template <std::floating_point TFloat>
+  static Duration fromNs(TFloat) = delete;
+  template <std::floating_point TFloat>
+  static Duration fromUs(TFloat) = delete;
+  template <std::floating_point TFloat>
+  static Duration fromMs(TFloat) = delete;
+  template <std::floating_point TFloat>
+  static Duration fromSec(TFloat) = delete;
+
  private:
   // Femtoseconds per picosecond, nanosecond, microsecond, millisecond and
   // second.
@@ -244,6 +321,100 @@ class Duration {
 
   // Length in femtoseconds.
   uint64_t durationFs_{0};
+
+  // Exclusive upper bound of a floating-point length in units of
+  // `kFsPerUnit` femtoseconds: the whole units in 2^64 fs.
+  template <uint64_t kFsPerUnit>
+  static constexpr uint64_t getUnitsUpperBound() noexcept {
+    return std::numeric_limits<uint64_t>::max() / kFsPerUnit;
+  }
+
+  /**
+   * `units` source units of `kFsPerUnit` femtoseconds each, with everything
+   * below the source unit dropped.
+   *
+   * @param units  Length in source units, in [0, getUnitsUpperBound()).
+   *
+   * @return       The truncated length as a Duration.
+   */
+  template <uint64_t kFsPerUnit, std::floating_point TFloat>
+  static constexpr Duration fromUnits(
+      const TFloat units,
+      Rounding::TruncateToUnit) noexcept {
+    checkRange<kFsPerUnit>(units);
+    return Duration(static_cast<uint64_t>(units) * kFsPerUnit);
+  }
+
+  /**
+   * `units` source units of `kFsPerUnit` femtoseconds each, rounded to the
+   * nearest femtosecond, halfway cases up.
+   *
+   * @param units  Length in source units, in [0, getUnitsUpperBound()).
+   *
+   * @return       The rounded length as a Duration.
+   */
+  template <uint64_t kFsPerUnit, std::floating_point TFloat>
+  static constexpr Duration fromUnits(
+      const TFloat units,
+      Rounding::NearestFs) noexcept {
+    checkRange<kFsPerUnit>(units);
+    const double fs =
+        static_cast<double>(units) * static_cast<double>(kFsPerUnit);
+    const auto wholeFs = static_cast<uint64_t>(fs);
+    // Not `fs + 0.5`, which rounds 0.49999999999999994 and odd counts above
+    // 2^52 up. `fs - wholeFs` is exact below 2^53 fs, and above it every
+    // double is already whole.
+    return Duration(
+        wholeFs + (fs - static_cast<double>(wholeFs) >= 0.5 ? 1 : 0));
+  }
+
+  /**
+   * `units` source units of `kFsPerUnit` femtoseconds each, rounded up to the
+   * next whole femtosecond.
+   *
+   * @param units  Length in source units, in [0, getUnitsUpperBound()).
+   *
+   * @return       The rounded-up length as a Duration.
+   */
+  template <uint64_t kFsPerUnit, std::floating_point TFloat>
+  static constexpr Duration fromUnits(
+      const TFloat units,
+      Rounding::CeilFs) noexcept {
+    checkRange<kFsPerUnit>(units);
+    const double fs =
+        static_cast<double>(units) * static_cast<double>(kFsPerUnit);
+    const auto wholeFs = static_cast<uint64_t>(fs);
+    return Duration(wholeFs + (fs > static_cast<double>(wholeFs) ? 1 : 0));
+  }
+
+  /**
+   * In debug builds, abort unless `units` is in [0, getUnitsUpperBound()):
+   * converting a negative, NaN or larger value to an integer is undefined
+   * behaviour. Other builds do not check.
+   *
+   * @param units  Length in source units of `kFsPerUnit` femtoseconds.
+   */
+  template <uint64_t kFsPerUnit, std::floating_point TFloat>
+  static constexpr void checkRange(const TFloat units) noexcept {
+    if constexpr (folly::kIsDebug) {
+      // In double, where the bound is exact; a float bound would round it.
+      constexpr auto kUpperBound =
+          static_cast<double>(getUnitsUpperBound<kFsPerUnit>());
+      const auto value = static_cast<double>(units);
+      if (!std::is_constant_evaluated() &&
+          !(value >= 0 && value < kUpperBound)) {
+        reportOutOfRange(value, kFsPerUnit);
+      }
+    }
+  }
+
+  /**
+   * Abort, naming a floating-point length outside its factory's range.
+   *
+   * @param units      The length, in source units.
+   * @param fsPerUnit  Femtoseconds per source unit, e.g. 1000000000 for us.
+   */
+  [[noreturn]] static void reportOutOfRange(double units, uint64_t fsPerUnit);
 };
 
 } // namespace packsim

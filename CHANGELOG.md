@@ -37,5 +37,11 @@ on `main` has the detail.
 - `packsim/examples/make_example_config.py`, the Python script that writes
   `packsim/examples/incast-2host.json`, using nothing beyond the standard
   library.
+- `Duration::fromUs(double, mode)`, which rounds a floating-point length with
+  one of the `Rounding` rules: `TruncateToUnit` drops the fraction of a
+  microsecond, `NearestFs` rounds to the nearest femtosecond, and `CeilFs` rounds
+  up to the next one. A floating-point length has to name its rule:
+  `Duration::fromUs(1.7)` and the other factories given a floating-point value
+  do not compile.
 
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main
