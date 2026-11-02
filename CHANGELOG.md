@@ -43,5 +43,8 @@ on `main` has the detail.
   up to the next one. A floating-point length has to name its rule:
   `Duration::fromUs(1.7)` and the other factories given a floating-point value
   do not compile.
+- `Ticker`, in `packsim/kernel/ticker.h`, which raises a callback once per
+  period of simulated time until it is stopped or destroyed, and rejects a
+  zero period.
 
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main
