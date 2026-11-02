@@ -16,6 +16,7 @@
 
 #include "packsim/kernel/data-rate.h"
 #include "packsim/kernel/device-id.h"
+#include "packsim/kernel/duration.h"
 #include "packsim/kernel/scheduler.h"
 #include "packsim/kernel/sim-context.h"
 #include "packsim/kernel/time.h"
@@ -147,6 +148,65 @@ TEST(DcqcnConstructionTest, MinRateOfZeroIsRejected) {
       },
       ThrowsMessage<std::invalid_argument>(HasSubstr(
           "DcqcnConfig.rpMinRate 0 Mbps must be at least 0.000001 Mbps")));
+}
+
+// The alpha-update period is truncated to whole microseconds, so 0.5 us would
+// be a zero-period timer.
+TEST(DcqcnConstructionTest, AlphaUpdatePeriodUnderOneMicrosecondIsRejected) {
+  packsim::thrift::DcqcnConfig cfg;
+  cfg.dcqcnEnable() = true;
+  cfg.rpDceTcpRtt() = 0.5;
+
+  EXPECT_THAT(
+      [&] { DcqcnCongestionControl::validateConfig(cfg, DataRate("200Gbps")); },
+      ThrowsMessage<std::invalid_argument>(
+          HasSubstr("DcqcnConfig.rpDceTcpRtt 0.5 us must be at least 1 us")));
+}
+
+// Without dcqcnEnable the alpha-update timer never runs.
+TEST(DcqcnConstructionTest, AlphaUpdatePeriodIsNotCheckedWithoutDcqcnEnable) {
+  packsim::thrift::DcqcnConfig cfg;
+  cfg.dcqcnEnable() = false;
+  cfg.rpDceTcpRtt() = 0.5;
+
+  EXPECT_NO_THROW(
+      DcqcnCongestionControl::validateConfig(cfg, DataRate("200Gbps")));
+}
+
+// The rate-increase timer starts at the first CNP even without dcqcnEnable.
+TEST(DcqcnConstructionTest, RateIncreasePeriodUnderOneMicrosecondIsRejected) {
+  packsim::thrift::DcqcnConfig cfg;
+  cfg.dcqcnEnable() = false;
+  cfg.rpTimerReset() = 0.5;
+
+  EXPECT_THAT(
+      [&] { DcqcnCongestionControl::validateConfig(cfg, DataRate("200Gbps")); },
+      ThrowsMessage<std::invalid_argument>(
+          HasSubstr("DcqcnConfig.rpTimerReset 0.5 us must be at least 1 us")));
+}
+
+// The bound is exclusive: `Duration::fromUs` takes only lengths below it.
+TEST(DcqcnConstructionTest, RateIncreasePeriodAtTheUpperBoundIsRejected) {
+  packsim::thrift::DcqcnConfig cfg;
+  cfg.rpTimerReset() = static_cast<double>(Duration::getUsUpperBound());
+
+  EXPECT_THAT(
+      [&] { DcqcnCongestionControl::validateConfig(cfg, DataRate("200Gbps")); },
+      ThrowsMessage<std::invalid_argument>(HasSubstr(
+          "DcqcnConfig.rpTimerReset 18446744073 us must be at least 1 us and "
+          "below 18446744073 us")));
+}
+
+TEST(DcqcnConstructionTest, AlphaUpdatePeriodAtTheUpperBoundIsRejected) {
+  packsim::thrift::DcqcnConfig cfg;
+  cfg.dcqcnEnable() = true;
+  cfg.rpDceTcpRtt() = static_cast<double>(Duration::getUsUpperBound());
+
+  EXPECT_THAT(
+      [&] { DcqcnCongestionControl::validateConfig(cfg, DataRate("200Gbps")); },
+      ThrowsMessage<std::invalid_argument>(HasSubstr(
+          "DcqcnConfig.rpDceTcpRtt 18446744073 us must be at least 1 us and "
+          "below 18446744073 us")));
 }
 
 // Drives a controller with clamped targets (rpClampTgtRate) through two CNPs,

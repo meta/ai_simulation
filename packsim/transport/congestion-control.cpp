@@ -21,7 +21,9 @@
 
 #include "packsim/kernel/data-rate.h"
 #include "packsim/kernel/device-id.h"
+#include "packsim/kernel/duration.h"
 #include "packsim/kernel/sim-context.h"
+#include "packsim/kernel/ticker.h"
 #include "packsim/kernel/trace.h"
 #include "packsim/transport/rate-limiter.h"
 #include "packsim/transport/roce-constants.h"
@@ -53,6 +55,30 @@ void DcqcnCongestionControl::validateConfig(
             cfg.rpMinRate().value(),
             nicSpeed.getBps() / static_cast<double>(kMbpsToBps)));
   }
+  // The timer periods are truncated to whole microseconds, so a period under
+  // 1 us would be 0, which Ticker rejects, and `Duration::fromUs` takes only
+  // lengths below `Duration::getUsUpperBound()`. The alpha timer runs only with
+  // dcqcnEnable; the rate-increase timer also starts on the first CNP.
+  const auto periodUpperBoundUs =
+      static_cast<double>(Duration::getUsUpperBound());
+  const double alphaPeriodUs = cfg.rpDceTcpRtt().value();
+  if (*cfg.dcqcnEnable() &&
+      !(alphaPeriodUs >= 1.0 && alphaPeriodUs < periodUpperBoundUs)) {
+    throw std::invalid_argument(
+        fmt::format(
+            "DcqcnConfig.rpDceTcpRtt {} us must be at least 1 us and below {} us: it is the alpha-update period, in whole microseconds",
+            alphaPeriodUs,
+            Duration::getUsUpperBound()));
+  }
+  const double rateIncreasePeriodUs = cfg.rpTimerReset().value();
+  if (!(rateIncreasePeriodUs >= 1.0 &&
+        rateIncreasePeriodUs < periodUpperBoundUs)) {
+    throw std::invalid_argument(
+        fmt::format(
+            "DcqcnConfig.rpTimerReset {} us must be at least 1 us and below {} us: it is the rate-increase period, in whole microseconds",
+            rateIncreasePeriodUs,
+            Duration::getUsUpperBound()));
+  }
 }
 
 DcqcnCongestionControl::DcqcnCongestionControl(
@@ -74,8 +100,8 @@ DcqcnCongestionControl::DcqcnCongestionControl(
       encapBytes_(encapBytes) {
   validateConfig(cfg, nicSpeed);
   g_ = cfg.rpDceTcpG().value() / kDceTcpGScale;
-  alphaTimerPeriod_ = Time::fromUs(cfg.rpDceTcpRtt().value());
-  rateIncreaseTimerPeriod_ = Time::fromUs(cfg.rpTimerReset().value());
+  rateIncreaseTimerPeriod_ =
+      Duration::fromUs(cfg.rpTimerReset().value(), Rounding::TruncateToUnit{});
   clampTgtRate_ = cfg.rpClampTgtRate().value();
   minRate_ =
       DataRate(static_cast<uint64_t>(cfg.rpMinRate().value() * kMbpsToBps));
@@ -99,12 +125,13 @@ DcqcnCongestionControl::DcqcnCongestionControl(
       [this](const FlexDeviceId&) { socket_->wakeupForSend(); });
 
   if (*cfg.dcqcnEnable()) {
-    alphaResumeEvent_ = simCtx_->schedule(
-        alphaTimerPeriod_, &DcqcnCongestionControl::timerAlphaUpdate, this);
-    rpTimerEvent_ = simCtx_->schedule(
-        rateIncreaseTimerPeriod_,
-        &DcqcnCongestionControl::rateIncreaseTimer,
-        this);
+    alphaTicker_.emplace(
+        *simCtx_,
+        Ticker::Options{
+            .period = Duration::fromUs(
+                cfg.rpDceTcpRtt().value(), Rounding::TruncateToUnit{}),
+            .onTick = [this] { timerAlphaUpdate(); }});
+    restartRateIncreaseTicker();
   }
   registerTracerSnapshots();
 }
@@ -175,9 +202,26 @@ void DcqcnCongestionControl::cancelTimers() {
 }
 
 void DcqcnCongestionControl::cancelRateTimers() {
-  alphaResumeEvent_.cancel();
-  rpTimerEvent_.cancel();
+  // Not reset(): this can run from a tick's own onTick, through the socket.
+  if (alphaTicker_) {
+    alphaTicker_->stop();
+  }
+  if (rateIncreaseTicker_) {
+    rateIncreaseTicker_->stop();
+  }
   tokenBucketRl_->cancelRefreshEvent();
+}
+
+void DcqcnCongestionControl::restartRateIncreaseTicker() {
+  if (rateIncreaseTicker_) {
+    rateIncreaseTicker_->restart();
+    return;
+  }
+  rateIncreaseTicker_.emplace(
+      *simCtx_,
+      Ticker::Options{.period = rateIncreaseTimerPeriod_, .onTick = [this] {
+                        rateIncreaseTimer();
+                      }});
 }
 
 void DcqcnCongestionControl::startRateReduceMonitorTimer() {
@@ -208,9 +252,6 @@ void DcqcnCongestionControl::timerAlphaUpdate() {
     alpha_ = alpha_ * g_;
   }
   gotCnpDuringAlphaInterval_ = false;
-  alphaResumeEvent_.cancel();
-  alphaResumeEvent_ = simCtx_->schedule(
-      alphaTimerPeriod_, &DcqcnCongestionControl::timerAlphaUpdate, this);
 }
 
 void DcqcnCongestionControl::cnpAlphaUpdate() {
@@ -262,11 +303,7 @@ void DcqcnCongestionControl::cnpRateUpdate() {
   if (!((currRate_ >= minRate_) && (currRate_ <= maxRate_))) {
     throw std::runtime_error("Current Rate out of valid range");
   }
-  rpTimerEvent_.cancel();
-  rpTimerEvent_ = simCtx_->schedule(
-      rateIncreaseTimerPeriod_,
-      &DcqcnCongestionControl::rateIncreaseTimer,
-      this);
+  restartRateIncreaseTicker();
   // enter fast recovery phase
   rpStage_ = RpStageType::FAST_RECOVERY;
   tokenBucketRl_->setRateParam(currRate_);
@@ -289,11 +326,6 @@ void DcqcnCongestionControl::rateIncreaseTimer() {
       srcHost_.toString(),
       dstHost_.toString(),
       numTimeBasedRateIncrEvents_);
-  rpTimerEvent_.cancel();
-  rpTimerEvent_ = simCtx_->schedule(
-      rateIncreaseTimerPeriod_,
-      &DcqcnCongestionControl::rateIncreaseTimer,
-      this);
   numTimeBasedRateIncrEvents_++;
   if (rpStage_ == RpStageType::FAST_RECOVERY) {
     fastRecoveryTime();

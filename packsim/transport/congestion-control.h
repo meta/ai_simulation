@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include <folly/memory/not_null.h>
 
@@ -17,8 +18,9 @@
 #include "packsim/if/gen-cpp2/nic_config_types.h"
 #include "packsim/kernel/data-rate.h"
 #include "packsim/kernel/device-id.h"
-#include "packsim/kernel/scheduler.h"
+#include "packsim/kernel/duration.h"
 #include "packsim/kernel/sim-context.h"
+#include "packsim/kernel/ticker.h"
 #include "packsim/kernel/time.h"
 #include "packsim/transport/rate-limiter.h"
 
@@ -184,7 +186,9 @@ class DcqcnCongestionControl final : public CongestionControl {
    *
    * @throw std::runtime_error if `rpDceTcpG` is outside [0, 1024];
    *        std::invalid_argument if `rpMinRate` is below 1 bps (0, negative or
-   *        NaN) or above `nicSpeed`.
+   *        NaN) or above `nicSpeed`, if `rpTimerReset` is outside
+   *        [1, `Duration::getUsUpperBound()`) us, or if `dcqcnEnable` is set
+   *        and `rpDceTcpRtt` is outside that range.
    */
   static void validateConfig(
       const packsim::thrift::DcqcnConfig& cfg,
@@ -256,6 +260,9 @@ class DcqcnCongestionControl final : public CongestionControl {
   void activeIncreaseTime();
   // Non-virtual so the destructor can reuse it.
   void cancelRateTimers();
+  // Make the next rate-increase tick one period from now, starting the timer
+  // if it has never run.
+  void restartRateIncreaseTicker();
 
   // ---- Socket-facing quota accounting ----
   uint32_t sendSizeToTokens(uint32_t bytes) const;
@@ -277,12 +284,13 @@ class DcqcnCongestionControl final : public CongestionControl {
   // NIC speed
   DataRate maxRate_;
   double alpha_{1.0};
-  // Next alpha-update tick (timerAlphaUpdate); re-armed on every tick,
-  // cancelled by cancelRateTimers().
-  Scheduler::EventHandle alphaResumeEvent_;
-  // Next reaction-point rate-increase tick (rateIncreaseTimer); re-armed on
-  // every tick and on a CNP rate cut, cancelled by cancelRateTimers().
-  Scheduler::EventHandle rpTimerEvent_;
+  // Runs timerAlphaUpdate every rpDceTcpRtt; built only with dcqcnEnable,
+  // stopped by cancelRateTimers().
+  std::optional<Ticker> alphaTicker_;
+  // Runs rateIncreaseTimer every rpTimerReset; built with dcqcnEnable or at
+  // the first CNP, restarted by every CNP rate cut, stopped by
+  // cancelRateTimers().
+  std::optional<Ticker> rateIncreaseTicker_;
   uint32_t numTimeBasedRateIncrEvents_{0};
   RpStageType rpStage_{RpStageType::FAST_RECOVERY};
   bool gotCnpDuringAlphaInterval_{false};
@@ -290,10 +298,8 @@ class DcqcnCongestionControl final : public CongestionControl {
   // Config values cached at construction (avoid repeated thrift field access).
   // rpDceTcpG / 1024.0
   double g_;
-  // Time::fromUs(rpDceTcpRtt)
-  Time alphaTimerPeriod_;
-  // Time::fromUs(rpTimerReset)
-  Time rateIncreaseTimerPeriod_;
+  // rpTimerReset, truncated to whole microseconds
+  Duration rateIncreaseTimerPeriod_;
   // rpMinRate in bps
   DataRate minRate_;
   // rpAiRate in bps
