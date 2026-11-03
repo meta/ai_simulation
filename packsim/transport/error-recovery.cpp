@@ -282,11 +282,7 @@ void GoBackNRecovery::scheduleNackResend(
       ? rnrFieldToTime(*rnrBackoffIdx) + kRnrResendJitter
       : kNackResendInterval;
   const auto now = simCtx_->now();
-  XLOGF(
-      DBG2,
-      "Sending NACK at time {}; resend at {}",
-      now.getNs(),
-      (now + resendTime).getNs());
+  XLOGF(DBG2, "Sending NACK at {}; resend at {}", now, now + resendTime);
   nackEvent_ = simCtx_->schedule(
       resendTime,
       &GoBackNRecovery::scheduleNackResend,

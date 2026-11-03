@@ -7,11 +7,15 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <compare>
 #include <cstdint>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 
+#include <fmt/format.h>
 #include <folly/CPortability.h>
 
 namespace packsim {
@@ -179,3 +183,95 @@ class Time {
 };
 
 } // namespace packsim
+
+/**
+ * Prints a `Time` as its distance from time zero, in the largest unit it fills
+ * and without losing a femtosecond: 1500000000 fs prints as "1.5us", 300 ns as
+ * "300ns", 1 fs as "1fs" and zero as "0s".
+ *
+ * Example usage:
+ *
+ *      // Logs "Sending NACK at 2.5us".
+ *      XLOGF(DBG2, "Sending NACK at {}", simCtx.now());
+ */
+template <>
+struct fmt::formatter<packsim::Time> {
+  constexpr auto parse(format_parse_context& ctx) {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const packsim::Time time, FormatContext& ctx) const {
+    return formatFs(time.getFs(), ctx);
+  }
+
+  /**
+   * Print `fs` femtoseconds the way a `Time` prints, for a type that counts
+   * them too, such as `Duration`.
+   *
+   * @param fs   Femtoseconds to print.
+   * @param ctx  Context to print into.
+   *
+   * @return     The iterator past the printed text.
+   */
+  template <typename FormatContext>
+  static auto formatFs(const uint64_t fs, FormatContext& ctx) {
+    if (fs == 0) {
+      return fmt::format_to(ctx.out(), "0s");
+    }
+    // A nonzero time fills at least the last unit, a femtosecond.
+    return formatIn(
+        fs,
+        *std::ranges::find_if(
+            kUnits, [fs](const Unit& unit) { return fs >= unit.fsPerUnit; }),
+        ctx);
+  }
+
+ private:
+  // A unit to print in.
+  struct Unit {
+    // Size of the unit in femtoseconds, e.g. 1000 for "ps".
+    uint64_t fsPerUnit;
+    // Decimal digits a fraction of the unit needs, e.g. 3 for "ps".
+    int fractionDigits;
+    // Printed after the number, e.g. "ps".
+    std::string_view suffix;
+  };
+
+  // Largest first.
+  static constexpr std::array<Unit, 6> kUnits{{
+      {1'000'000'000'000'000ULL, 15, "s"},
+      {1'000'000'000'000ULL, 12, "ms"},
+      {1'000'000'000ULL, 9, "us"},
+      {1'000'000ULL, 6, "ns"},
+      {1'000ULL, 3, "ps"},
+      {1ULL, 0, "fs"},
+  }};
+
+  /**
+   * Print `fs` femtoseconds in `unit`, with the fraction's trailing zeros
+   * dropped: 1500000000 fs in "us" prints as "1.5us".
+   *
+   * @param fs    Femtoseconds to print.
+   * @param unit  Unit to print them in.
+   * @param ctx   Context to print into.
+   *
+   * @return      The iterator past the printed text.
+   */
+  template <typename FormatContext>
+  static auto
+  formatIn(const uint64_t fs, const Unit& unit, FormatContext& ctx) {
+    const uint64_t whole = fs / unit.fsPerUnit;
+    uint64_t fraction = fs % unit.fsPerUnit;
+    if (fraction == 0) {
+      return fmt::format_to(ctx.out(), "{}{}", whole, unit.suffix);
+    }
+    int digits = unit.fractionDigits;
+    while (fraction % 10 == 0) {
+      fraction /= 10;
+      --digits;
+    }
+    return fmt::format_to(
+        ctx.out(), "{}.{:0{}}{}", whole, fraction, digits, unit.suffix);
+  }
+};

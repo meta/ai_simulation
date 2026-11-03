@@ -5,11 +5,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
+#include <fmt/format.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "packsim/kernel/duration.h"
 #include "packsim/kernel/time.h"
 
 namespace packsim {
@@ -124,6 +130,45 @@ TEST(PackSimTimeTests, GettersTruncateToCoarserUnit) {
   const Time t = Time::fromNs(1) + Time::fromPs(500); // 1.5 ns
   EXPECT_EQ(t.getNs(), 1u);
   EXPECT_EQ(t.getPs(), 1'500u);
+}
+
+TEST(PackSimTimeTests, FormatsZeroAsZeroSeconds) {
+  EXPECT_EQ(fmt::format("{}", Time()), "0s");
+}
+
+TEST(PackSimTimeTests, FormatsOneOfEachUnitInThatUnit) {
+  const std::vector<std::string> expected{
+      "1s", "1ms", "1us", "1ns", "1ps", "1fs"};
+
+  const std::vector<std::string> formatted{
+      fmt::format("{}", Time::fromSec(1)),
+      fmt::format("{}", Time::fromMs(1)),
+      fmt::format("{}", Time::fromUs(1)),
+      fmt::format("{}", Time::fromNs(1)),
+      fmt::format("{}", Time::fromPs(1)),
+      fmt::format("{}", Time(1))};
+
+  EXPECT_EQ(formatted, expected);
+}
+
+TEST(PackSimTimeTests, FormatsJustBelowAUnitInTheNextSmallerOne) {
+  EXPECT_EQ(
+      fmt::format("{}", Time::fromMs(1) - Duration(1)), "999.999999999us");
+}
+
+TEST(PackSimTimeTests, FormatsAFractionWithoutTrailingZeros) {
+  EXPECT_EQ(
+      fmt::format("{}", Time::fromUs(1) + Duration::fromNs(500)), "1.5us");
+}
+
+TEST(PackSimTimeTests, FormatsAFractionWithItsLeadingZeros) {
+  EXPECT_EQ(fmt::format("{}", Time::fromNs(1) + Duration(1)), "1.000001ns");
+}
+
+TEST(PackSimTimeTests, FormatsTheLargestTimeWithoutLosingAFemtosecond) {
+  EXPECT_EQ(
+      fmt::format("{}", Time(std::numeric_limits<uint64_t>::max())),
+      "18446.744073709551615s");
 }
 
 } // namespace packsim

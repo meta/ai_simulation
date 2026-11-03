@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include <fmt/format.h>
 #include <folly/Portability.h>
 
 #include "packsim/kernel/time.h"
@@ -418,3 +419,15 @@ class Duration {
 };
 
 } // namespace packsim
+
+/**
+ * Prints a `Duration` like a `Time`, in the largest unit it fills: 1500000000
+ * fs prints as "1.5us".
+ */
+template <>
+struct fmt::formatter<packsim::Duration> : fmt::formatter<packsim::Time> {
+  template <typename FormatContext>
+  auto format(const packsim::Duration duration, FormatContext& ctx) const {
+    return fmt::formatter<packsim::Time>::formatFs(duration.getFs(), ctx);
+  }
+};

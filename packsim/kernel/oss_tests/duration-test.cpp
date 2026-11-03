@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include <fmt/format.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -280,6 +281,11 @@ TEST(DurationTest, CeilFsKeepsAWholeCountAbove2To53Femtoseconds) {
   EXPECT_EQ(
       Duration::fromUs(kAbove2To53FsInUs, Rounding::CeilFs{}),
       Duration(kAbove2To53Fs));
+}
+
+TEST(DurationTest, FormatsInTheLargestUnitItFills) {
+  EXPECT_EQ(
+      fmt::format("{}", Duration::fromUs(1) + Duration::fromNs(500)), "1.5us");
 }
 
 // The range check exists only in debug builds, so these are registered only

@@ -46,5 +46,9 @@ on `main` has the detail.
 - `Ticker`, in `packsim/kernel/ticker.h`, which raises a callback once per
   period of simulated time until it is stopped or destroyed, and rejects a
   zero period.
+- `fmt` formatters for `Time` and `Duration`, which print the value in the
+  largest unit it fills without losing a femtosecond: "1.5us", "300ns", "1fs",
+  "0s". The Go-Back-N NACK debug log prints its times this way instead of as
+  whole nanoseconds.
 
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main
