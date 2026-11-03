@@ -23,46 +23,49 @@ namespace packsim {
 using ::testing::HasSubstr;
 using ::testing::ThrowsMessage;
 
-TEST(PackSimTimeTests, AddTime) {
+// Arithmetic that treats a `Time` as a span, which `Duration` models instead.
+// These tests go when `Time`'s span operators are deprecated. `Duration`
+// already has sums, differences and `Duration::between`, but no scaling yet.
+TEST(LegacyTimeSpanArithmeticTests, AddTime) {
   Time t1(5);
   Time t2(10);
   Time t3 = t1 + t2;
   EXPECT_EQ(t3.getFs(), 15);
 }
 
-TEST(PackSimTimeTests, SubtractTime) {
+TEST(LegacyTimeSpanArithmeticTests, SubtractTime) {
   Time t1(5);
   Time t2(11);
   Time t3 = t2 - t1;
   EXPECT_EQ(t3.getFs(), 6);
 }
 
-TEST(PackSimTimeTests, ScaleTime) {
+TEST(LegacyTimeSpanArithmeticTests, ScaleTime) {
   Time t1(5);
   Time t2 = t1 * 3U;
   EXPECT_EQ(t2.getFs(), 15);
 }
 
-TEST(PackSimTimeTests, SubtractUnderflowThrows) {
+TEST(LegacyTimeSpanArithmeticTests, SubtractUnderflowThrows) {
   EXPECT_THAT(
       [] { Time(5) - Time(10); },
       ThrowsMessage<std::runtime_error>(
           HasSubstr("Time difference is negative")));
 }
 
-TEST(PackSimTimeTests, PlusAssign) {
+TEST(LegacyTimeSpanArithmeticTests, PlusAssign) {
   Time t(10);
   t += Time(5);
   EXPECT_EQ(t.getFs(), 15);
 }
 
-TEST(PackSimTimeTests, MinusAssign) {
+TEST(LegacyTimeSpanArithmeticTests, MinusAssign) {
   Time t(10);
   t -= Time(3);
   EXPECT_EQ(t.getFs(), 7);
 }
 
-TEST(PackSimTimeTests, MinusAssignUnderflowThrows) {
+TEST(LegacyTimeSpanArithmeticTests, MinusAssignUnderflowThrows) {
   EXPECT_THAT(
       [] {
         Time t(5);
@@ -72,16 +75,16 @@ TEST(PackSimTimeTests, MinusAssignUnderflowThrows) {
           HasSubstr("Time difference is negative")));
 }
 
-TEST(PackSimTimeTests, ScalarMultiplyIsCommutative) {
+TEST(LegacyTimeSpanArithmeticTests, ScalarMultiplyIsCommutative) {
   EXPECT_EQ((Time(5) * 3U).getFs(), 15);
   EXPECT_EQ((3U * Time(5)).getFs(), 15);
 }
 
-TEST(PackSimTimeTests, DivideByScalar) {
+TEST(LegacyTimeSpanArithmeticTests, DivideByScalar) {
   EXPECT_EQ((Time(15) / 3U).getFs(), 5);
 }
 
-TEST(PackSimTimeTests, DivideByTimeYieldsRatio) {
+TEST(LegacyTimeSpanArithmeticTests, DivideByTimeYieldsRatio) {
   EXPECT_DOUBLE_EQ(Time(15) / Time(5), 3.0);
 }
 
@@ -127,7 +130,7 @@ TEST(PackSimTimeTests, NamedConstructorsScaleToFemtoseconds) {
 }
 
 TEST(PackSimTimeTests, GettersTruncateToCoarserUnit) {
-  const Time t = Time::fromNs(1) + Time::fromPs(500); // 1.5 ns
+  const Time t = Time::fromNs(1) + Duration::fromPs(500); // 1.5 ns
   EXPECT_EQ(t.getNs(), 1u);
   EXPECT_EQ(t.getPs(), 1'500u);
 }
