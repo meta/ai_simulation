@@ -267,7 +267,7 @@ void AllToAllRank::progress() {
               msgSendDelay);
           sendQpNumToUse_[peerRank] = (sendQpNumToUse_[peerRank] + 1) % numQps;
         } else {
-          sendMsg = send(peerRank, msgSize, chunk, 0, msgSendDelay);
+          sendMsg = send(peerRank, msgSize, chunk, msgSendDelay);
         }
         sendMsgs_[peerRank].emplace(chunk, std::move(sendMsg));
       }

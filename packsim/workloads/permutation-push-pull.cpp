@@ -104,7 +104,6 @@ void PermutationPushPullRank::startWrites() {
           dstRank_,
           msgSize,
           chunkId,
-          /*endpointId=*/0,
           /*sendDelayNs=*/0,
           /*writeImm=*/false,
           /*write=*/true);
@@ -156,7 +155,6 @@ void PermutationPushPullRank::startReads() {
           srcRank_,
           msgSize,
           chunkId,
-          /*endpointId=*/0,
           /*sendDelayNs=*/0,
           /*isRead=*/true);
     }

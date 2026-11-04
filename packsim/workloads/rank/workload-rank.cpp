@@ -21,6 +21,12 @@ namespace packsim {
 using packsim::workload::thrift::NicPairToQPNList;
 using packsim::workload::thrift::QPNPair;
 
+namespace {
+// NIC of every channel QP: channels take their QPs from qpnPairMap, whose QPs
+// all live on NIC 0.
+constexpr uint32_t kChannelQpNicIdx = 0;
+} // namespace
+
 WorkloadRank::WorkloadRank(const WorkloadRankParams& params)
     : onRankComplete_(params.rccb),
       sendMessageFn_(params.smcb),
@@ -164,7 +170,6 @@ std::unique_ptr<Message> WorkloadRank::send(
     const uint32_t toRank,
     const uint32_t size,
     const uint32_t chunkId,
-    const uint32_t endpointId,
     const uint64_t sendDelayNs,
     const bool writeImm,
     const bool write,
@@ -175,7 +180,6 @@ std::unique_ptr<Message> WorkloadRank::send(
         toRank,
         size,
         chunkId,
-        endpointId,
         sendDelayNs,
         writeImm,
         write,
@@ -188,7 +192,7 @@ std::unique_ptr<Message> WorkloadRank::send(
         toRank,
         size,
         chunkId,
-        endpointId,
+        kChannelQpNicIdx,
         sendDelayNs,
         writeImm,
         write,
@@ -196,14 +200,16 @@ std::unique_ptr<Message> WorkloadRank::send(
   }
 
   const auto& qpnPair = getDataQPNs(toRank);
+  // The data QP lives on the first NIC pair, as the notify QP does.
+  const auto nicPair = getNotifyNicPair(toRank);
   return sendWithQPN(
       toRank,
       size,
       chunkId,
       *qpnPair.local(),
       *qpnPair.remote(),
-      endpointId,
-      endpointId,
+      /*endpointId=*/*nicPair.srcNicIdx(),
+      /*dstEndpointId=*/*nicPair.dstNicIdx(),
       sendDelayNs,
       writeImm,
       write,
@@ -216,28 +222,28 @@ std::unique_ptr<Message> WorkloadRank::recv(
     const uint32_t fromRank,
     const uint32_t size,
     const uint32_t chunkId,
-    const uint32_t endpointId,
     const uint64_t sendDelayNs,
     const bool isRead,
     const uint64_t dataPtr) {
   if (parent_ != nullptr) {
-    return parent_->recv(
-        fromRank, size, chunkId, endpointId, sendDelayNs, isRead, dataPtr);
+    return parent_->recv(fromRank, size, chunkId, sendDelayNs, isRead, dataPtr);
   }
 
   if (channelManager_) {
-    return channelManager_->recv(fromRank, rank_, size, chunkId, endpointId);
+    return channelManager_->recv(
+        fromRank, rank_, size, chunkId, kChannelQpNicIdx);
   }
 
   const auto& qpnPair = getDataQPNs(fromRank);
+  const auto nicPair = getNotifyNicPair(fromRank);
   return recvWithQPN(
       fromRank,
       size,
       chunkId,
       *qpnPair.local(),
       *qpnPair.remote(),
-      endpointId,
-      endpointId,
+      /*endpointId=*/*nicPair.srcNicIdx(),
+      /*dstEndpointId=*/*nicPair.dstNicIdx(),
       sendDelayNs,
       isRead,
       dataPtr);

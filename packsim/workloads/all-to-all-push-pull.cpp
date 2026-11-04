@@ -115,7 +115,6 @@ void AllToAllPushPullRank::startWrites() {
               peerRank,
               msgSize,
               chunk,
-              /*endpointId=*/0,
               /*sendDelayNs=*/0,
               /*writeImm=*/false,
               /*write=*/true);
@@ -172,7 +171,6 @@ void AllToAllPushPullRank::startReads() {
               peerRank,
               msgSize,
               chunk,
-              /*endpointId=*/0,
               /*sendDelayNs=*/0,
               /*isRead=*/true);
         }

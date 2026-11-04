@@ -166,7 +166,6 @@ class WorkloadRank {
       uint32_t toRank,
       uint32_t size,
       uint32_t chunkId,
-      uint32_t endpointId = 0,
       uint64_t sendDelayNs = 0,
       bool writeImm = false,
       bool write = false,
@@ -192,16 +191,16 @@ class WorkloadRank {
       uint32_t fromRank,
       uint32_t size,
       uint32_t chunkId,
-      uint32_t endpointId = 0,
       uint64_t sendDelayNs = 0,
       bool isRead = false,
       uint64_t dataPtr = 0);
 
   const packsim::workload::thrift::QPNPair& getDataQPNs(uint32_t peer) const;
   const packsim::workload::thrift::QPNPair& getNotifyQPNs(uint32_t peer) const;
-  // NIC pair owning the notify QP to `peer` (srcNicIdx is this rank's NIC,
-  // dstNicIdx the peer's): the first NIC pair, as in getNotifyQPNs. Legacy
-  // qpnPairMap QPs live on NIC 0, so they report (0, 0).
+  // NIC pair owning the notify QP and the first data QP to `peer` (srcNicIdx
+  // is this rank's NIC, dstNicIdx the peer's): the first NIC pair, as in
+  // getNotifyQPNs and getDataQPNs. Legacy qpnPairMap QPs live on NIC 0, so
+  // they report (0, 0).
   packsim::thrift::NicPair getNotifyNicPair(uint32_t peer) const;
 
   // NIC-aware QPN accessors for multi-NIC configurations

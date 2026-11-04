@@ -51,4 +51,22 @@ on `main` has the detail.
   "0s". The Go-Back-N NACK debug log prints its times this way instead of as
   whole nanoseconds.
 
+### Changed
+
+- `WorkloadRank::send()` and `recv()` no longer take an `endpointId`: the
+  queue pair they use decides the NICs. A call that still passes one can
+  compile with each later argument landing in the parameter after its own, so
+  remove it.
+
+### Fixed
+
+- Collectives that send through `WorkloadRank::send()` and `recv()` -- the
+  double binary tree and recursive algorithms, and the ring in
+  `RingNicSelectionMode.SINGLE_NIC` -- send their data between the NICs of the
+  NIC pair that owns its queue pair. They took the queue pair from the rank
+  pair's first NIC pair but always sent from NIC 0 to the peer's NIC 0, so a
+  workload whose first NIC pair is not (0, 0), such as one whose `qpTemplates`
+  leave out NIC 0, sent its data on the wrong NICs. A workload whose first NIC
+  pair is (0, 0) runs as before.
+
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main

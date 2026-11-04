@@ -183,7 +183,6 @@ void IncastRank::sendMsgs() {
           kIncastDestinationRank,
           msgSize,
           chunkId,
-          /*endpointId=*/0,
           /*sendDelayNs=*/0,
           /*writeImm=*/false,
           /*write=*/useOneSided));
