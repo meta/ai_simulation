@@ -106,7 +106,8 @@ enum AllReduceAlgorithm {
 enum RingNicSelectionMode {
   // Send every chunk through the first compatible NIC pair.
   SINGLE_NIC = 0,
-  // Distribute chunks round-robin across one compatible path per NIC.
+  // Distribute chunks round-robin across one compatible path per NIC, using
+  // every NIC that can be paired with a distinct NIC of the peer.
   ALL_AVAILABLE_NICS = 1,
 }
 

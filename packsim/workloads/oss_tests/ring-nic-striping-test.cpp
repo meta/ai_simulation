@@ -35,7 +35,8 @@ class RingNicStripingTest : public WorkloadRankTestHarness,
 
   void configureTopology(
       const bool isAsymmetric,
-      const bool requiresRematching = false) {
+      const bool requiresRematching = false,
+      const uint32_t numPairedNics = kNumNics) {
     workCfg_.name() = "RING_NIC_STRIPING_TEST";
     workCfg_.workloadId() = 0;
     workCfg_.numEndpoints() = kNumRanks;
@@ -52,7 +53,7 @@ class RingNicStripingTest : public WorkloadRankTestHarness,
 
     for (uint32_t srcRank = 0; srcRank < kNumRanks; ++srcRank) {
       const uint32_t dstRank = (srcRank + 1) % kNumRanks;
-      for (uint32_t srcNic = 0; srcNic < kNumNics; ++srcNic) {
+      for (uint32_t srcNic = 0; srcNic < numPairedNics; ++srcNic) {
         std::vector<uint32_t> dstNics;
         if (requiresRematching && srcNic == 0) {
           dstNics = {0, 1};
@@ -172,6 +173,33 @@ TEST_F(RingNicStripingTest, FindsFullNicMatchingWhenGreedyChoiceWouldFail) {
 
   validateStats();
   expectEveryNicUsedEqually();
+}
+
+TEST_F(RingNicStripingTest, UsesOnlyTheNicsThePeerCanPairWith) {
+  // NIC 3 has no QP to the peer, as a flattened CLOS confines a same-rack
+  // pair to its local NICs.
+  constexpr uint32_t kNumPairedNics = kNumNics - 1;
+  configureTopology(
+      /*isAsymmetric=*/false,
+      /*requiresRematching=*/false,
+      kNumPairedNics);
+  configureAllReduce(RingNicSelectionMode::ALL_AVAILABLE_NICS);
+  workCfg_.config()->allReduce()->numChunks() = kNumPairedNics;
+  workCfg_.config()->allReduce()->maxChunksInFlight() = kNumPairedNics;
+  workCfg_.config()->allReduce()->sizeBytes() =
+      kNumRanks * kNumPairedNics * 1024;
+
+  run();
+
+  validateStats();
+  for (const auto& stats : rankStats_) {
+    ASSERT_EQ(stats.sentMsgsByEndpoint.size(), kNumPairedNics);
+    EXPECT_FALSE(stats.sentMsgsByEndpoint.contains(kNumNics - 1));
+    for (uint32_t nic = 0; nic < kNumPairedNics; ++nic) {
+      EXPECT_EQ(
+          stats.sentMsgsByEndpoint.at(nic), stats.sentMsgs / kNumPairedNics);
+    }
+  }
 }
 
 TEST_F(RingNicStripingTest, BatchChildUsesParentNicPaths) {

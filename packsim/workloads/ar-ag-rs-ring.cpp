@@ -371,7 +371,7 @@ std::vector<RingRank::RingNicPath> RingRank::selectNicPathMatching(
     const uint32_t dstRank) {
   const size_t nicCount = candidatesBySrcNic.size();
   std::vector<std::optional<size_t>> srcNicByDstNic(nicCount);
-  std::vector<RingNicPath> paths(nicCount);
+  std::vector<std::optional<RingNicPath>> pathBySrcNic(nicCount);
   const std::function<bool(size_t, std::vector<uint8_t>&)> assignPath =
       [&](const size_t srcNic, std::vector<uint8_t>& visitedDstNics) {
         for (const auto& candidate : candidatesBySrcNic.at(srcNic)) {
@@ -387,22 +387,32 @@ std::vector<RingRank::RingNicPath> RingRank::selectNicPathMatching(
             continue;
           }
           srcNicByDstNic.at(dstNic) = srcNic;
-          paths.at(srcNic) = candidate;
+          pathBySrcNic.at(srcNic) = candidate;
           return true;
         }
         return false;
       };
 
+  // A source NIC with no augmenting path now never gains one later, so
+  // skipping it still leaves a maximum matching.
   for (size_t srcNic = 0; srcNic < nicCount; ++srcNic) {
     std::vector<uint8_t> visitedDstNics(nicCount, 0);
-    if (!assignPath(srcNic, visitedDstNics)) {
-      throw std::invalid_argument(
-          fmt::format(
-              "Ring edge {} -> {} cannot use all {} NICs with one compatible path per NIC",
-              srcRank,
-              dstRank,
-              nicCount));
+    assignPath(srcNic, visitedDstNics);
+  }
+
+  std::vector<RingNicPath> paths;
+  paths.reserve(nicCount);
+  for (const auto& path : pathBySrcNic) {
+    if (path.has_value()) {
+      paths.emplace_back(*path);
     }
+  }
+  if (paths.empty()) {
+    throw std::invalid_argument(
+        fmt::format(
+            "Ring edge {} -> {} has no NIC pair with a compatible path",
+            srcRank,
+            dstRank));
   }
   return paths;
 }

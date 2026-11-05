@@ -141,16 +141,19 @@ class RingRank : public WorkloadRank {
       size_t nicCount) const;
 
   /**
-   * Select a deterministic complete matching from NIC path candidates.
+   * Select a deterministic maximum matching from NIC path candidates: as many
+   * source NICs as possible, each paired with a distinct destination NIC. A
+   * fabric that confines a rank pair to some NICs, e.g. a flattened CLOS's 4
+   * local NICs for a same-rack pair, leaves the others unused.
    *
    * @param candidatesBySrcNic    Candidate paths grouped by source NIC.
    * @param srcRank               Source rank used in validation errors.
    * @param dstRank               Destination rank used in validation errors.
    *
-   * @return                      One path per source NIC, indexed by source
-   *                              NIC.
-   * @throw                       std::invalid_argument when no complete
-   *                              matching exists.
+   * @return                      One path per matched source NIC, in source
+   *                              NIC order.
+   * @throw                       std::invalid_argument when no NIC pair has a
+   *                              path.
    */
   static std::vector<RingNicPath> selectNicPathMatching(
       const RingNicPathCandidates& candidatesBySrcNic,
@@ -184,7 +187,7 @@ class RingRank : public WorkloadRank {
 
   /**
    * Set up the NIC paths the NIC selection mode needs: none for SINGLE_NIC,
-   * one per NIC for ALL_AVAILABLE_NICS.
+   * one per pairable NIC for ALL_AVAILABLE_NICS.
    *
    * @throw std::invalid_argument for a mode outside the enum, or when
    *        initializeNicPaths() rejects the workload.

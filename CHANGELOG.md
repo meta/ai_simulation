@@ -57,6 +57,12 @@ on `main` has the detail.
   queue pair they use decides the NICs. A call that still passes one can
   compile with each later argument landing in the parameter after its own, so
   remove it.
+- `RingNicSelectionMode::ALL_AVAILABLE_NICS` in `packsim/if/workload.thrift`
+  stripes a ring edge's chunks over as many NICs as can each be paired with a
+  distinct NIC of the peer, and leaves the rest unused. It used to reject the
+  workload unless every NIC could be paired; it now rejects it only when no NIC
+  pair has a path. Where every NIC can be paired, the selected paths are
+  unchanged.
 
 ### Fixed
 
