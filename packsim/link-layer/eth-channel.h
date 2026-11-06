@@ -16,7 +16,7 @@
 #include "packsim/if/gen-cpp2/config_types.h"
 #include "packsim/kernel/scheduler.h"
 #include "packsim/kernel/time.h"
-#include "packsim/packet/ptr/PacketPtr.h"
+#include "packsim/packet/ethernet-frame.h"
 
 namespace packsim {
 
@@ -77,26 +77,27 @@ class EthernetChannel {
    * the trace and RNG draw happen at `startSerialize` time, but no
    * remote-receive event is ever scheduled.
    *
-   * @param p    Packet whose serialization is starting; used only for
-   *             the TRACE-TX log line (not stored).
-   * @param src  Local source port; identifies the sender in the
-   *             TRACE-TX line, and the RNG draw uses
-   *             `src->getSimCtx()->random`.
-   * @return     The propagation delay sampled for this packet — the
-   *             caller MUST pass it to a matching
-   *             `scheduleRemoteReceive` once serialization completes.
+   * @param frame  Frame whose serialization is starting; used only for
+   *               the TRACE-TX log line (not stored).
+   * @param src    Local source port; identifies the sender in the
+   *               TRACE-TX line, and the RNG draw uses
+   *               `src->getSimCtx()->random`.
+   * @return       The propagation delay sampled for this frame — the
+   *               caller MUST pass it to a matching
+   *               `scheduleRemoteReceive` once serialization completes.
    */
   [[nodiscard]] Time startSerialize(
-      const PacketPtr& p,
+      const EthernetFrame& frame,
       EthernetPort* FOLLY_NONNULL src) const;
 
   /**
-   * Schedule the remote-receive event for `p` at `now + delayUntilReceive`.
+   * Schedule the remote-receive event for `frame` at
+   * `now + delayUntilReceive`. The event holds its own copy of the frame.
    * Resolves the destination port from `src` (the channel has exactly two
    * attached ports).
    *
    * `delayUntilReceive` is the FULL remaining time until the receiver
-   * sees the last bit of `p`. `LinkLayerScheduler` calls this once the
+   * sees the last bit of `frame`. `LinkLayerScheduler` calls this once the
    * wire-time stopwatch expires and passes the `propDelay` returned by the
    * matching `startSerialize`: `now` has already advanced by
    * `txCompleteTime`, so `now + propDelay` is the receiver arrival time.
@@ -109,23 +110,23 @@ class EthernetChannel {
    * for the same `startSerialize` call — the channel keeps no state to detect
    * that.
    *
-   * @param p                 Packet whose receive event will fire on
+   * @param frame             Frame whose receive event will fire on
    *                          the remote port.
    * @param src               Local source port; the channel infers
    *                          the destination as the other attached
    *                          port.
    * @param delayUntilReceive Remaining sim-time until the receiver
-   *                          should see the last bit of `p`.
+   *                          should see the last bit of `frame`.
    * @return                  Handle of the scheduled receive, owned by the
    *                          receiving port's context.
    */
   Scheduler::EventHandle scheduleRemoteReceive(
-      const PacketPtr& p,
+      const EthernetFrame& frame,
       EthernetPort* FOLLY_NONNULL src,
       Time delayUntilReceive) const;
 
   Scheduler::EventHandle sendPacket(
-      const PacketPtr& p,
+      const EthernetFrame& frame,
       EthernetPort* FOLLY_NONNULL dst,
       Time pktDelay) const;
 

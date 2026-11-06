@@ -11,9 +11,11 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include <fmt/core.h>
 #include <folly/portability/GFlags.h>
 #include <gtest/gtest.h>
 
@@ -388,9 +390,7 @@ TEST_F(LlrEthernetPortTest, OutOfOrderPacketIsDropped) {
 
   // With INIT negotiation skipped, port2 expects seq 0 first, so a frame
   // carrying seq 1 arrives with seq 0 missing.
-  auto pkt = createPacket<PacketType::IPV6>(1000);
-  llr::Llr::stampLlrHeader(pkt, llr::FrameType::LLR_ELIGIBLE, /*seq=*/1);
-  port2_->receive(std::move(pkt));
+  port2_->receive({.pkt = createPacket<PacketType::IPV6>(1000), .llrSeq = 1u});
   scheduler_.run(Time::fromUs(100));
 
   EXPECT_EQ(packetsReceived, 0);
@@ -644,7 +644,7 @@ class CtlosDropTest : public ::testing::Test {
   }
 
   void deliver(PacketPtr pkt) {
-    port_->receive(pkt);
+    port_->receive({.pkt = std::move(pkt)});
     scheduler_.run();
   }
 
@@ -1713,7 +1713,7 @@ TEST_F(LlrEthernetPortTest, NextCtlosFrameReturnsAckAfterPost) {
   auto frame = port1_->txArbiter().nextCtlosFrame();
   ASSERT_TRUE(frame.has_value());
   EXPECT_EQ(frame->kind, TxArbiter::TxKind::CTL_OS);
-  EXPECT_NE(frame->pkt, nullptr);
+  EXPECT_NE(frame->frame.pkt, nullptr);
 
   // Queue should be drained — second pull returns nullopt.
   EXPECT_FALSE(port1_->txArbiter().nextCtlosFrame().has_value());
@@ -1736,7 +1736,7 @@ TEST_F(LlrEthernetPortTest, NextCtlosFrameBumpsTxStatsAtPullTime) {
 
   auto frame = port1_->txArbiter().nextCtlosFrame();
   ASSERT_TRUE(frame.has_value());
-  const auto frameSize = frame->pkt->getSize();
+  const auto frameSize = frame->frame.pkt->getSize();
 
   // Pull-time stat bump.
   const auto psAfterPull = port1_->getPortStats(/*cos=*/0);
@@ -1755,13 +1755,13 @@ TEST_F(LlrEthernetPortTest, OnFrameTransmittedEgressBumpsTxStats) {
   // Non-LLR egress path: onFrameTransmitted(EGRESS) bumps per-CoS stats
   // for the packet's CoS.
   auto frame = TxArbiter::OutboundFrame{
-      .pkt = createPacket<PacketType::IPV6>(500),
+      .frame = {.pkt = createPacket<PacketType::IPV6>(500)},
       .kind = TxArbiter::TxKind::EGRESS,
   };
-  const auto cos = port1_->getPktCos(frame.pkt);
+  const auto cos = port1_->getPktCos(frame.frame.pkt);
   const auto txBytesBefore = port1_->getPortStats(cos).txBytes;
   const auto txPktsBefore = port1_->getPortStats(cos).txPkts;
-  const auto frameSize = frame.pkt->getSize();
+  const auto frameSize = frame.frame.pkt->getSize();
 
   port1_->txArbiter().onFrameTransmitted(frame);
 
@@ -1785,7 +1785,7 @@ TEST_F(LlrEthernetPortTest, OnFrameTransmittedLlrNewFiresTxCallbackOnce) {
       });
 
   auto frame = TxArbiter::OutboundFrame{
-      .pkt = createPacket<PacketType::IPV6>(500),
+      .frame = {.pkt = createPacket<PacketType::IPV6>(500), .llrSeq = 0u},
       .kind = TxArbiter::TxKind::LLR_NEW,
   };
   port1_->txArbiter().onFrameTransmitted(frame);
@@ -1807,11 +1807,215 @@ TEST_F(LlrEthernetPortTest, OnFrameTransmittedLlrPassthroughFiresTxCallback) {
       });
 
   auto frame = TxArbiter::OutboundFrame{
-      .pkt = createPacket<PacketType::IPV6>(500),
+      .frame = {.pkt = createPacket<PacketType::IPV6>(500)},
       .kind = TxArbiter::TxKind::LLR_PASSTHROUGH,
   };
   port1_->txArbiter().onFrameTransmitted(frame);
   EXPECT_EQ(txCallbackCount, 1);
+}
+
+// ============================================================================
+// Shared-packet LLR sequence alias tests
+//
+// A forwarded frame keeps one `PacketPtr` from hop to hop, so the LLR of every
+// hop handles the same packet object. These tests build a two-hop chain
+// A -> B -> C, with B split into an ingress port (`bIn_`) and an egress port
+// (`bOut_`). Each receiver must classify a frame by the sequence number its own
+// link partner assigned, whatever another hop does to the same packet while the
+// frame is in flight.
+// ============================================================================
+
+class LlrSharedPacketAliasTest : public LlrEthernetPortTest {
+ protected:
+  // The spec maximum. The chain carries far fewer bytes, so no receiver sends
+  // a byte-triggered ACK.
+  static constexpr uint32_t kNoAckThresholdBytes = 16384;
+  // A replays every 10 us. B's 100 us timer cannot expire inside a test run,
+  // so `bOut_` transmits each frame exactly once.
+  static constexpr uint64_t kAReplayTimeoutNs = 10'000;
+  static constexpr uint64_t kBReplayTimeoutNs = 100'000;
+  static constexpr uint64_t kTxBufferBytes = 512 * 1024;
+  static constexpr uint32_t kPayloadBytes = 1000;
+  // Long enough for at least three replay rounds at A.
+  static constexpr uint64_t kRunUs = 40;
+
+  // One PDES worker, so the timelines below do not depend on how worker
+  // threads interleave. Set before the base `SetUp` rebuilds the engine; the
+  // base fixture's `FlagSaver` restores the flag.
+  void SetUp() override {
+    gflags::SetCommandLineOption("pdes_threads", "1");
+    LlrEthernetPortTest::SetUp();
+  }
+
+  // Builds A -> bIn and bOut -> C on separate channels and enables LLR on all
+  // four ports with the periodic ACK timer off. No port ever sends an ACK, so
+  // A's replay timer keeps expiring and retransmitting frames that bIn has
+  // already accepted.
+  void buildChain(const uint64_t abDelayNs, const uint64_t bcDelayNs) {
+    a_ = std::make_unique<EthernetPort>(&simCtx_, "100Gbps");
+    bIn_ = std::make_unique<EthernetPort>(&simCtx_, "100Gbps");
+    bOut_ = std::make_unique<EthernetPort>(&simCtx_, "100Gbps");
+    c_ = std::make_unique<EthernetPort>(&simCtx_, "100Gbps");
+    a_->setObserver(&observerA_);
+    bIn_->setObserver(&observerBIn_);
+    bOut_->setObserver(&observerBOut_);
+    c_->setObserver(&observerC_);
+
+    channelAb_ = std::make_unique<EthernetChannel>(abDelayNs);
+    a_->attach(channelAb_.get());
+    bIn_->attach(channelAb_.get());
+    channelBc_ = std::make_unique<EthernetChannel>(bcDelayNs);
+    bOut_->attach(channelBc_.get());
+    c_->attach(channelBc_.get());
+
+    a_->enableLlr(
+        makeTestLlrConfig(
+            kNoAckThresholdBytes, kTxBufferBytes, kAReplayTimeoutNs),
+        /*enableGlobalTimer=*/false);
+    for (EthernetPort* port : {bIn_.get(), bOut_.get(), c_.get()}) {
+      port->enableLlr(
+          makeTestLlrConfig(
+              kNoAckThresholdBytes, kTxBufferBytes, kBReplayTimeoutNs),
+          /*enableGlobalTimer=*/false);
+    }
+  }
+
+  void TearDown() override {
+    a_.reset();
+    bIn_.reset();
+    bOut_.reset();
+    c_.reset();
+    channelAb_.reset();
+    channelBc_.reset();
+    LlrEthernetPortTest::TearDown();
+  }
+
+  // A's replay counters and both receivers' LLR receive counters, for a
+  // failure message.
+  std::string describeChain() const {
+    const auto& a = a_->llr()->stats();
+    const auto& b = bIn_->llr()->stats();
+    const auto& c = c_->llr()->stats();
+    return fmt::format(
+        "A txReplay={} txReplayViaTimer={}; bIn good={} dup={} missing={}; "
+        "C good={} dup={} missing={}",
+        a.txReplay,
+        a.txReplayViaTimer,
+        b.rxExpectedSeqGood,
+        b.rxDuplicateSeq,
+        b.rxMissingSeq,
+        c.rxExpectedSeqGood,
+        c.rxDuplicateSeq,
+        c.rxMissingSeq);
+  }
+
+  // Declared before the ports so they outlive them: a port holds a non-owning
+  // pointer to its observer.
+  LambdaPortObserver observerA_;
+  LambdaPortObserver observerBIn_;
+  LambdaPortObserver observerBOut_;
+  LambdaPortObserver observerC_;
+  std::unique_ptr<EthernetPort> a_;
+  std::unique_ptr<EthernetPort> bIn_;
+  std::unique_ptr<EthernetPort> bOut_;
+  std::unique_ptr<EthernetPort> c_;
+  std::unique_ptr<EthernetChannel> channelAb_;
+  std::unique_ptr<EthernetChannel> channelBc_;
+};
+
+// B forwards P on B -> C while A's timer-driven replay of P, which B has
+// already accepted, is in flight on A -> B. B's ingress must treat the replay
+// as a duplicate of A's sequence number 0, so it delivers P once and then
+// accepts A's next frame Q with sequence number 1.
+//
+// Times in us; one 1000 B frame serializes in about 0.09 us at 100 Gbps.
+//   0      bOut sends filler F (B -> C seq 0). A sends P (A -> B seq 0).
+//   ~5.1   bIn accepts P. Its next expected A -> B seq becomes 1.
+//   ~10.1  A's replay timer expires and A retransmits P.
+//   12     bOut sends P (B -> C seq 1) while the replay is in flight.
+//   ~15.2  The replay of P reaches bIn.
+//   20     A sends Q (A -> B seq 1), which reaches bIn at ~25.1.
+TEST_F(LlrSharedPacketAliasTest, TimerReplayAliasDeliversOnceAndAcceptsNext) {
+  constexpr uint64_t kBOutSendsPUs = 12;
+  constexpr uint64_t kASendsQUs = 20;
+  buildChain(/*abDelayNs=*/5'000, /*bcDelayNs=*/0);
+  const auto filler = createPacket<PacketType::IPV6>(kPayloadBytes);
+  const auto p = createPacket<PacketType::IPV6>(kPayloadBytes);
+  const auto q = createPacket<PacketType::IPV6>(kPayloadBytes);
+  int pDeliveredAtB = 0;
+  int qDeliveredAtB = 0;
+  observerBIn_.setOnPacketRcvdCallback(
+      [&](EthernetPort&, const PacketPtr& pkt) {
+        if (pkt == p) {
+          ++pDeliveredAtB;
+        } else if (pkt == q) {
+          ++qDeliveredAtB;
+        }
+      });
+  int pDeliveredAtC = 0;
+  observerC_.setOnPacketRcvdCallback([&](EthernetPort&, const PacketPtr& pkt) {
+    if (pkt == p) {
+      ++pDeliveredAtC;
+    }
+  });
+
+  bOut_->send(filler);
+  a_->send(p);
+  simCtx_.schedule(Time::fromUs(kBOutSendsPUs), [this, p] { bOut_->send(p); });
+  simCtx_.schedule(Time::fromUs(kASendsQUs), [this, q] { a_->send(q); });
+  scheduler_.run(Time::fromUs(kRunUs));
+
+  // The scenario needs at least one timer-driven replay at A.
+  ASSERT_GE(a_->llr()->stats().txReplayViaTimer, 1u) << describeChain();
+  EXPECT_EQ(pDeliveredAtB, 1) << describeChain();
+  EXPECT_EQ(qDeliveredAtB, 1) << describeChain();
+  EXPECT_GE(bIn_->llr()->stats().rxDuplicateSeq, 1u) << describeChain();
+  EXPECT_EQ(pDeliveredAtC, 1) << describeChain();
+}
+
+// B forwards P toward C over a slow B -> C link. While P is in flight to C,
+// A's replay timer retransmits P on A -> B. C must classify P by B's sequence
+// number 1 and deliver it.
+//
+// Times in us; one 1000 B frame serializes in about 0.09 us at 100 Gbps.
+//   0      bOut sends filler F (B -> C seq 0), which reaches C at ~20.1.
+//          A sends P (A -> B seq 0).
+//   ~5.1   bIn accepts P and forwards it: bOut sends P (B -> C seq 1).
+//   ~10.1  A's replay timer expires and A retransmits P while P is still on
+//          the B -> C link. A replays again every ~10 us.
+//   ~25.2  P reaches C.
+TEST_F(LlrSharedPacketAliasTest, TimerReplayAliasDoesNotHideFrameDownstream) {
+  buildChain(/*abDelayNs=*/5'000, /*bcDelayNs=*/20'000);
+  const auto filler = createPacket<PacketType::IPV6>(kPayloadBytes);
+  const auto p = createPacket<PacketType::IPV6>(kPayloadBytes);
+  int pDeliveredAtB = 0;
+  observerBIn_.setOnPacketRcvdCallback(
+      [&](EthernetPort&, const PacketPtr& pkt) {
+        if (pkt == p) {
+          ++pDeliveredAtB;
+        }
+        bOut_->send(pkt);
+      });
+  int fillerDeliveredAtC = 0;
+  int pDeliveredAtC = 0;
+  observerC_.setOnPacketRcvdCallback([&](EthernetPort&, const PacketPtr& pkt) {
+    if (pkt == filler) {
+      ++fillerDeliveredAtC;
+    } else if (pkt == p) {
+      ++pDeliveredAtC;
+    }
+  });
+
+  bOut_->send(filler);
+  a_->send(p);
+  scheduler_.run(Time::fromUs(kRunUs));
+
+  // The scenario needs at least one timer-driven replay at A.
+  ASSERT_GE(a_->llr()->stats().txReplayViaTimer, 1u) << describeChain();
+  EXPECT_EQ(pDeliveredAtB, 1) << describeChain();
+  EXPECT_EQ(fillerDeliveredAtC, 1) << describeChain();
+  EXPECT_EQ(pDeliveredAtC, 1) << describeChain();
+  EXPECT_EQ(c_->llr()->stats().rxDuplicateSeq, 0u) << describeChain();
 }
 
 } // namespace packsim

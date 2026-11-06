@@ -20,7 +20,7 @@ FOLLY_GFLAGS_DECLARE_bool(packsim_trace_wire_events);
 
 namespace packsim {
 
-class PacketPtr;
+struct EthernetFrame;
 
 /**
  * Trace-line columns for TRACE-TX / TRACE-RX, fixed-column for stable
@@ -39,29 +39,28 @@ class PacketPtr;
  */
 struct LlrTraceFields {
   // The `llr` column value, encoded as listed above. It is -1 when the frame
-  // carries no LLR state, which covers an Ethernet frame whose
-  // `llrHeader.enabled` is false and any packet that is neither an
-  // `EthernetPacket` nor an `LlrCtlosFrame`.
+  // carries no LLR state: it is neither sent with an LLR sequence number nor
+  // an `LlrCtlosFrame`.
   int type{-1};
 
   // The `seq` column value, 0 when the frame carries no sequence number.
   uint32_t seq{0};
 
   /**
-   * Read the LLR trace columns out of `pkt`.
+   * Read the LLR trace columns out of `frame`.
    *
    * This is a static member rather than a free function so that the header
    * declares none, and the definition lives in `wire-trace-flag.cpp` so that
-   * the header can forward-declare `PacketPtr` instead of pulling
-   * `packet/base.h` and `packet/ptr/PacketPtr.h` into every consumer that
+   * the header can forward-declare `EthernetFrame` instead of pulling
+   * `packet/base.h` and `packet/ethernet-frame.h` into every consumer that
    * only needs the gflag.
    *
-   * @param pkt  Any packet. A type that carries no LLR state is safe to pass
-   *             and yields the defaults.
-   * @return     The columns for an `LlrCtlosFrame` or an LLR-enabled
-   *             `EthernetPacket`, otherwise `{-1, 0}`.
+   * @param frame  Any frame. One that carries no LLR state is safe to pass
+   *               and yields the defaults.
+   * @return       The columns for an `LlrCtlosFrame` or a frame sent with an
+   *               LLR sequence number, otherwise `{-1, 0}`.
    */
-  static LlrTraceFields extractFrom(const PacketPtr& pkt) noexcept;
+  static LlrTraceFields extractFrom(const EthernetFrame& frame) noexcept;
 };
 
 } // namespace packsim

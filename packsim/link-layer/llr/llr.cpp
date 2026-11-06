@@ -332,13 +332,10 @@ std::optional<uint32_t> Llr::admit(const PacketPtr& packet) {
   }
   ++stats_.txOk;
   txSeq_ = LlrSeq::seqInc(txSeq_);
-  // Stamp here, not in the caller: a buffered frame whose header still reads
-  // ineligible is sequenced for this sender and unsequenced for the peer.
-  stampLlrHeader(packet, FrameType::LLR_ELIGIBLE, seq);
   return seq;
 }
 
-std::optional<PulledFrame> Llr::pullNextNewFrame() {
+std::optional<EthernetFrame> Llr::pullNextNewFrame() {
   XCHECK(packetSource_ != nullptr)
       << "pullNextNewFrame: setTxPacketSource() not called";
   // Non-null per the XCHECK above; the reference form makes that visible to
@@ -361,11 +358,7 @@ std::optional<PulledFrame> Llr::pullNextNewFrame() {
       const auto seq = admit(popped);
       XCHECK(seq.has_value())
           << "pullNextNewFrame: admit failed after admissionDecision accepted";
-      return PulledFrame{
-          .pkt = std::move(popped),
-          .type = FrameType::LLR_ELIGIBLE,
-          .seq = *seq,
-      };
+      return EthernetFrame{.pkt = std::move(popped), .llrSeq = *seq};
     }
     case AdmissionResult::PASSTHROUGH_TX: {
       PacketPtr popped;
@@ -374,12 +367,7 @@ std::optional<PulledFrame> Llr::pullNextNewFrame() {
           << "pullNextNewFrame: peek/pop mismatch — the admission decision "
              "was made on a different packet than the one being transmitted";
       ++stats_.txPassthrough;
-      stampLlrHeader(popped, FrameType::LLR_INELIGIBLE, /*seq=*/0);
-      return PulledFrame{
-          .pkt = std::move(popped),
-          .type = FrameType::LLR_INELIGIBLE,
-          .seq = 0,
-      };
+      return EthernetFrame{.pkt = std::move(popped), .llrSeq = std::nullopt};
     }
     case AdmissionResult::DROP: {
       // Pop the packet, bump `txDiscard`, and return `nullopt`.
@@ -400,28 +388,7 @@ std::optional<PulledFrame> Llr::pullNextNewFrame() {
   return std::nullopt;
 }
 
-void Llr::stampLlrHeader(
-    const PacketPtr& pkt,
-    const FrameType type,
-    const uint32_t seq) {
-  auto* eth = pkt.as<EthernetPacket>();
-  // Only EthernetPackets carry an LLR header. The wire-layer contract
-  // is that LLR is invoked only for ethernet frames — a null `eth`
-  // here means an upstream layer queued a wrong-typed packet onto the
-  // LLR data path, which would silently bypass header stamping and
-  // produce an unack-able frame on the wire.
-  XCHECK(eth) << "stampLlrHeader: non-EthernetPacket reached LLR";
-  if (type == FrameType::LLR_ELIGIBLE) {
-    eth->llrHeader.enabled = true;
-    eth->llrHeader.seqNum = seq;
-  } else {
-    // A pass-through frame carries no sequence number. Receivers consult
-    // `enabled` first and read no further, so `seqNum` is left as it is.
-    eth->llrHeader.enabled = false;
-  }
-}
-
-std::optional<ReplayFrame> Llr::pullNextReplayFrame() {
+std::optional<EthernetFrame> Llr::pullNextReplayFrame() {
   // Once exhausted in this REPLAY entry, stay null until the next
   // REPLAY entry resets us. Without this gate, a pull after drain would
   // re-snapshot the still-unacked buffer and start the batch again, so a
@@ -465,13 +432,11 @@ std::optional<ReplayFrame> Llr::pullNextReplayFrame() {
       } else {
         replayNextSeq_ = LlrSeq::seqInc(replayNextSeq_);
       }
-      // Stamp + stats bump inside the helper so `TxArbiter` doesn't have
-      // to duplicate the accounting — matches the `pullNextNewFrame`
-      // pattern.
+      // Stats bump inside the helper so `TxArbiter` doesn't have to
+      // duplicate the accounting — matches the `pullNextNewFrame` pattern.
       ++stats_.txReplay;
       stats_.txReplayBytes += frame->getSize();
-      stampLlrHeader(frame, FrameType::LLR_ELIGIBLE, seq);
-      return ReplayFrame{.pkt = std::move(frame), .seq = seq};
+      return EthernetFrame{.pkt = std::move(frame), .llrSeq = seq};
     }
     if (atLast) {
       replaySnap_.reset();

@@ -8,7 +8,9 @@
 #include "packsim/link-layer/eth-channel.h"
 
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
+#include <type_traits>
 
 #include <folly/Utility.h>
 #include <folly/logging/xlog.h>
@@ -17,17 +19,32 @@
 #include "packsim/link-layer/eth-port.h"
 #include "packsim/link-layer/wire-trace-flag.h"
 #include "packsim/packet/base.h"
+#include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim {
 
 namespace {
+// A PDES event keeps a callable of up to this many bytes inline
+// (`pdes::RawEvent::func`), so scheduling it does not allocate.
+constexpr std::size_t kInlineEventBytes = 48;
+// The receive event `sendPacket` schedules stores the member-function pointer,
+// the port and the frame. A frame that outgrows this makes every receive on
+// every link allocate.
+static_assert(
+    sizeof(&EthernetPort::receive) + sizeof(EthernetPort*) +
+            sizeof(EthernetFrame) <=
+        kInlineEventBytes,
+    "the receive event no longer fits inline in a PDES event");
+static_assert(std::is_nothrow_move_constructible_v<EthernetFrame>);
+
 // Per-packet TX trace emitter. Gated on `FLAGS_packsim_trace_wire_events`
 // (default off).
-void emitTraceTx(const PacketPtr& pkt, const EthernetPort& src) noexcept {
+void emitTraceTx(const EthernetFrame& frame, const EthernetPort& src) noexcept {
   if (!FLAGS_packsim_trace_wire_events) {
     return;
   }
-  const auto llr = LlrTraceFields::extractFrom(pkt);
+  const PacketPtr& pkt = frame.pkt;
+  const auto llr = LlrTraceFields::extractFrom(frame);
   XLOGF(
       INFO,
       "TRACE-TX T={:014} src={}/{} pkt={} llr={} seq={} size={}",
@@ -82,7 +99,7 @@ void EthernetChannel::attach(EthernetPort* port) {
 }
 
 Time EthernetChannel::startSerialize(
-    const PacketPtr& p,
+    const EthernetFrame& frame,
     EthernetPort* FOLLY_NONNULL src) const {
   const uint64_t delayNs = *delayCfg_.delayNs();
   const uint64_t expDelayNs =
@@ -90,26 +107,27 @@ Time EthernetChannel::startSerialize(
   // The caller (`LinkLayerScheduler`) holds the returned propDelay until
   // serialization actually completes and then passes it back via
   // `scheduleRemoteReceive`.
-  emitTraceTx(p, *src);
+  emitTraceTx(frame, *src);
   return Time::fromNs(delayNs + expDelayNs);
 }
 
 Scheduler::EventHandle EthernetChannel::scheduleRemoteReceive(
-    const PacketPtr& p,
+    const EthernetFrame& frame,
     EthernetPort* FOLLY_NONNULL src,
     Time delayUntilReceive) const {
   XDCHECK(src == ends_[0] || src == ends_[1])
       << "src must be one of the two attached ports";
   auto* dst = (src == ends_[0]) ? ends_[1] : ends_[0];
-  return sendPacket(p, dst, delayUntilReceive);
+  return sendPacket(frame, dst, delayUntilReceive);
 }
 
 Scheduler::EventHandle EthernetChannel::sendPacket(
-    const PacketPtr& p,
+    const EthernetFrame& frame,
     EthernetPort* FOLLY_NONNULL dst,
     Time pktDelay) const {
   // Always schedule receive - BER check happens in doReceive
-  return dst->getSimCtx()->schedule(pktDelay, &EthernetPort::receive, dst, p);
+  return dst->getSimCtx()->schedule(
+      pktDelay, &EthernetPort::receive, dst, frame);
 }
 
 EthernetPort* FOLLY_NONNULL

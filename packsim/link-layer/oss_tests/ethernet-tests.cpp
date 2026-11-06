@@ -181,12 +181,12 @@ TEST_F(EthernetTest, StartSerializeThenScheduleAfterDelay) {
   const Time expectedRecvTime = wireTime + delayTime_;
 
   simCtx_.scheduleNow([this, pkt, wireTime]() {
-    const Time propDelay = channel_->startSerialize(pkt, port1_.get());
+    const Time propDelay = channel_->startSerialize({.pkt = pkt}, port1_.get());
     // Fixture's makeFlexLinkDelayConfig leaves expDelayNs at default 0,
     // so propDelay is deterministic and equals delayTime_ exactly.
     EXPECT_EQ(propDelay, delayTime_);
     simCtx_.schedule(wireTime, [this, pkt, propDelay]() {
-      channel_->scheduleRemoteReceive(pkt, port1_.get(), propDelay);
+      channel_->scheduleRemoteReceive({.pkt = pkt}, port1_.get(), propDelay);
     });
   });
   scheduler_.run();

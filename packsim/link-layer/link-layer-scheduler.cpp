@@ -20,6 +20,7 @@
 #include "packsim/link-layer/eth-port.h"
 #include "packsim/link-layer/wire-trace-flag.h"
 #include "packsim/packet/base.h"
+#include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim::wire {
 
@@ -139,9 +140,9 @@ coro::SimScopedTask LinkLayerScheduler::txDriver() {
       }
       // CtlOS does not preempt CtlOS, and nothing else preempts CtlOS, so
       // there is no splice race: serialize, wait, deliver.
-      const TxTiming tx = beginTx(ctlos->pkt, TxKind::CTLOS);
+      const TxTiming tx = beginTx(ctlos->frame, TxKind::CTLOS);
       co_await coro::simScopedDelay(ctx_, tx.txComplete);
-      endTx(ctlos->pkt, tx.propDelay, TxKind::CTLOS);
+      endTx(ctlos->frame, tx.propDelay, TxKind::CTLOS);
       arbiter_->onFrameTransmitted(*ctlos);
       continue;
     }
@@ -156,14 +157,14 @@ coro::SimScopedTask LinkLayerScheduler::txDriver() {
             folly::to_underlying(frame->kind));
       }
       if (hasCtlosSource) {
-        co_await sendDataFrame(frame->pkt);
+        co_await sendDataFrame(frame->frame);
       } else {
         // No CtlOS producer, so nothing can splice into this frame. Completes
         // at the time `sendDataFrame`'s wire stopwatch would reach, with the
         // same trace events.
-        const TxTiming tx = beginTx(frame->pkt, TxKind::DATA);
+        const TxTiming tx = beginTx(frame->frame, TxKind::DATA);
         co_await coro::simScopedDelay(ctx_, tx.txComplete);
-        endTx(frame->pkt, tx.propDelay, TxKind::DATA);
+        endTx(frame->frame, tx.propDelay, TxKind::DATA);
       }
       arbiter_->onFrameTransmitted(*frame);
       continue;
@@ -207,9 +208,9 @@ coro::SimScopedTask LinkLayerScheduler::txDriver() {
 }
 
 LinkLayerScheduler::TxTiming LinkLayerScheduler::beginTx(
-    const PacketPtr& pkt,
+    const EthernetFrame& frame,
     const TxKind kind) {
-  const Time txCompleteTime = computeTxCompleteTime(pkt, linkRate_);
+  const Time txCompleteTime = computeTxCompleteTime(frame.pkt, linkRate_);
   if (FLAGS_packsim_trace_wire_events) {
     XLOGF(
         INFO,
@@ -222,14 +223,14 @@ LinkLayerScheduler::TxTiming LinkLayerScheduler::beginTx(
   // `scheduleRemoteReceive`.
   return TxTiming{
       .txComplete = txCompleteTime,
-      .propDelay = channel_->startSerialize(pkt, port_)};
+      .propDelay = channel_->startSerialize(frame, port_)};
 }
 
 void LinkLayerScheduler::endTx(
-    const PacketPtr& pkt,
+    const EthernetFrame& frame,
     const Time propDelay,
     const TxKind kind) {
-  channel_->scheduleRemoteReceive(pkt, port_, propDelay);
+  channel_->scheduleRemoteReceive(frame, port_, propDelay);
   if (kind == TxKind::CTLOS) {
     // Start the §5.2.11.2 spacing budget for the next CtlOS from the moment
     // this one leaves the wire.
@@ -256,7 +257,7 @@ const char* LinkLayerScheduler::traceLabel(const TxKind kind) noexcept {
 }
 
 coro::SimResultTask<void> LinkLayerScheduler::sendDataFrame(
-    const PacketPtr& pkt) {
+    const EthernetFrame& frame) {
   // Preemptible transmit (PFC or data). The wire-time stopwatch counts
   // down the local serialization budget. When CtlOS arrives mid-frame,
   // `pause()` the stopwatch, drain every queued CtlOS frame via
@@ -272,7 +273,7 @@ coro::SimResultTask<void> LinkLayerScheduler::sendDataFrame(
   // The propagation delay is sampled up front — held across splices and
   // passed to scheduleRemoteReceive once the wire-time budget is fully
   // consumed.
-  const TxTiming tx = beginTx(pkt, TxKind::DATA);
+  const TxTiming tx = beginTx(frame, TxKind::DATA);
 
   // `maxDuration` is unused — start() with txComplete as the
   // budget. `pause()` / `resume()` preserve elapsed across splices.
@@ -305,7 +306,7 @@ coro::SimResultTask<void> LinkLayerScheduler::sendDataFrame(
     if (winner == 0) {
       // Stopwatch expired — wire serialization fully consumed. Commit
       // the remote-receive event for the data frame.
-      endTx(pkt, tx.propDelay, TxKind::DATA);
+      endTx(frame, tx.propDelay, TxKind::DATA);
       co_return;
     }
 
@@ -349,9 +350,9 @@ coro::SimResultTask<void> LinkLayerScheduler::sendDataFrame(
       }
       // The same non-preemptible CtlOS transmit as `txDriver`'s, then notify
       // completion.
-      const TxTiming ctlosTx = beginTx(ctlosFrame->pkt, TxKind::CTLOS);
+      const TxTiming ctlosTx = beginTx(ctlosFrame->frame, TxKind::CTLOS);
       co_await coro::simScopedDelay(ctx_, ctlosTx.txComplete);
-      endTx(ctlosFrame->pkt, ctlosTx.propDelay, TxKind::CTLOS);
+      endTx(ctlosFrame->frame, ctlosTx.propDelay, TxKind::CTLOS);
       arbiter_->onFrameTransmitted(*ctlosFrame);
     }
 

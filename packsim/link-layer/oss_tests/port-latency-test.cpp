@@ -17,6 +17,7 @@
 #include "packsim/kernel/sim-context.h"
 #include "packsim/link-layer/eth-port.h"
 #include "packsim/packet/base.h"
+#include "packsim/packet/ethernet-frame.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 #include "packsim/topology/flex-topology.h"
 #include "packsim/util/builders.h"
@@ -102,7 +103,7 @@ class MockEthernetPort : public EthernetPort {
     doSendCalled = true;
   }
 
-  void doReceive(PacketPtr /* pkt */) override {
+  void doReceive(EthernetFrame /* frame */) override {
     doReceiveCalled = true;
   }
 
@@ -141,7 +142,7 @@ TEST_F(PortLatencyTest, PacketReceiveImmediateTest) {
   auto pkt = createPacket<PacketType::UDP>(1024);
 
   // no delay configured so it should receive immediately
-  mockPort.receive(pkt);
+  mockPort.receive({.pkt = pkt});
   EXPECT_TRUE(mockPort.doReceiveCalled);
 }
 
@@ -150,7 +151,7 @@ TEST_F(PortLatencyTest, PacketReceiveDelayedTest) {
   auto pkt = createPacket<PacketType::UDP>(1024);
 
   mockPort.setRxLatencyNs(500);
-  mockPort.receive(pkt);
+  mockPort.receive({.pkt = pkt});
   EXPECT_FALSE(mockPort.doReceiveCalled);
 
   // Advance the scheduler to (almost) execute the delayed event

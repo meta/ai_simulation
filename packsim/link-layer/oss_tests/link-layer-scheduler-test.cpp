@@ -696,7 +696,8 @@ TEST_F(LinkLayerSchedulerTest, CcUpdateIsTransmittedAsAnLlrEligibleFrame) {
 // The `ccUpdateLlrEligible = false` counterpart of the test above: CC_Update
 // kept out of LLR, departing from UEC §5.2.9. Two things must hold together:
 // the frame still reaches the peer and is still counted, but takes no sequence
-// number. Port stats must count it even though `llrHeader.enabled` is false.
+// number. Port stats must count it even though its `EthernetFrame` carries no
+// `llrSeq`.
 TEST_F(LinkLayerSchedulerTest, CcUpdateIsUnsequencedWhenLlrEligibilityIsOff) {
   constexpr int64_t kCcMsgTimerNs = 1000;
   constexpr int64_t kRunHorizonNs = 1500;
@@ -771,6 +772,38 @@ TEST_F(LinkLayerSchedulerTest, CcUpdateIsSentUnsequencedWhileLlrIsOff) {
       << "an unsequenced CC_Update is a passthrough transmit like any other, "
          "so it must show up in the stat that tracks time spent outside "
          "ADVANCE";
+}
+
+// A sequenced CC_Update holds a replay-buffer entry like any LLR-eligible
+// frame, so when no ACK covers it the replay timer must retransmit it. The
+// timer arms only once the transmit completion tells LLR that a sequenced frame
+// reached the wire; for a CC_Update that is the MAC control completion.
+TEST_F(LinkLayerSchedulerTest, SequencedCcUpdateIsReplayedWhenNeverAcked) {
+  // The first CC_Update goes out at 1000 ns; with no ACK the replay timer
+  // expires 2000 ns later, well inside the horizon.
+  constexpr int64_t kCcMsgTimerNs = 1000;
+  constexpr uint64_t kRetryTimeoutNs = 2000;
+  constexpr int64_t kRunHorizonNs = 5000;
+
+  packsim::thrift::LlrConfig llrCfg;
+  llrCfg.skipInitNegotiation() = true;
+  llrCfg.retryTimeoutNs() = kRetryTimeoutNs;
+  // Only port1 runs LLR, so the peer never sends an ACK.
+  port1_->enableLlr(llrCfg, /*enableGlobalTimer=*/false);
+
+  auto cbfcCfg = makeTestCbfcConfig();
+  cbfcCfg.ccMsgTimerNs() = kCcMsgTimerNs;
+  port1_->enableCbfc(cbfcCfg);
+  port2_->enableCbfc(makeTestCbfcConfig());
+
+  scheduler().run(Time::fromNs(kRunHorizonNs));
+
+  const auto& llrStats = port1_->llr()->stats();
+  ASSERT_GE(llrStats.txOk, 1u)
+      << "no CC_Update was sequenced, so there was nothing to replay";
+  EXPECT_GE(llrStats.txReplay, 1u)
+      << "the sequenced CC_Update was never replayed: the replay timer did "
+         "not arm when it reached the wire";
 }
 
 // The cell-free notify must never fire for a port-generated CC_Update: it

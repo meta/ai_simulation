@@ -75,4 +75,19 @@ on `main` has the detail.
   leave out NIC 0, sent its data on the wrong NICs. A workload whose first NIC
   pair is (0, 0) runs as before.
 
+### Changed
+
+- A frame's link-layer retry sequence number now travels with that transmission
+  in `EthernetFrame` (`packsim/packet/ethernet-frame.h`) instead of on the
+  packet: `EthernetPacket::llrHeader`, `LlrHeader` and `Llr::stampLlrHeader`
+  are removed, and `EthernetPort::receive` and the `EthernetChannel` send and
+  receive calls take an `EthernetFrame`.
+
+### Fixed
+
+- Link-layer retry no longer misclassifies a frame when a replay resends one
+  the next hop has already accepted. Each transmission now carries its own
+  sequence number instead of every hop sharing one on the packet, so runs that
+  replay accepted frames no longer depend on the number of simulation threads.
+
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main

@@ -33,6 +33,7 @@
 #include "packsim/link-layer/port-stats.h"
 #include "packsim/link-layer/tx-arbiter.h"
 #include "packsim/link-layer/tx-packet-source.h"
+#include "packsim/packet/ethernet-frame.h"
 #include "packsim/packet/pfc.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
@@ -107,7 +108,7 @@ class EthernetPort : public TxPacketSource {
 
   ~EthernetPort() override;
 
-  virtual void receive(PacketPtr p);
+  virtual void receive(EthernetFrame frame);
 
   void send(PacketPtr packet);
 
@@ -453,24 +454,24 @@ class EthernetPort : public TxPacketSource {
   // The only two members a subclass overrides. `port-latency-test` derives
   // from this class to intercept them; everything else below is private.
   virtual void doSend(PacketPtr packet);
-  virtual void doReceive(PacketPtr p);
+  virtual void doReceive(EthernetFrame frame);
 
  private:
   /**
    * One line of packet metadata for the drop logs: always the packet type,
    * port, size and timestamp, plus whatever else identifies this kind of
    * frame -- the ordered-set kind and sequence for an LLR CtlOS, the charged
-   * CoS for a data frame, and the LLR sequence number for anything
-   * LLR-eligible.
+   * CoS for a data frame, and the LLR sequence number for a frame sent with
+   * one.
    *
    * Called only on a drop, so the `is<>` it performs is off the per-frame
    * path.
    *
-   * @param pkt  The frame to describe.
+   * @param frame  The frame to describe.
    *
-   * @return     The formatted description.
+   * @return       The formatted description.
    */
-  [[nodiscard]] std::string getPacketRepr(const PacketPtr& pkt) const;
+  [[nodiscard]] std::string getPacketRepr(const EthernetFrame& frame) const;
 
   /**
    * Apply the link's bit error rate to an arriving frame.
@@ -483,23 +484,23 @@ class EthernetPort : public TxPacketSource {
    * A control ordered set of either producer is dropped silently -- no
    * counters, no observer -- because it has no CoS to charge.
    *
-   * @param pkt  The arriving frame.
+   * @param frame  The arriving frame.
    *
-   * @return     True if the frame was dropped and must not be processed
-   *             further.
+   * @return       True if the frame was dropped and must not be processed
+   *               further.
    */
-  [[nodiscard]] bool dropIfBitError(const PacketPtr& pkt);
+  [[nodiscard]] bool dropIfBitError(const EthernetFrame& frame);
 
   /**
    * Drop an arriving frame if the link went down after the receive was
    * scheduled. Silent for a control ordered set, as above.
    *
-   * @param pkt  The arriving frame.
+   * @param frame  The arriving frame.
    *
-   * @return     True if the frame was dropped and must not be processed
-   *             further.
+   * @return       True if the frame was dropped and must not be processed
+   *               further.
    */
-  [[nodiscard]] bool dropIfLinkDown(const PacketPtr& pkt);
+  [[nodiscard]] bool dropIfLinkDown(const EthernetFrame& frame);
 
   /**
    * Hand a control ordered set to the module that owns it: a CBFC CF_Update
@@ -528,8 +529,9 @@ class EthernetPort : public TxPacketSource {
   [[nodiscard]] bool dispatchMacControlFrame(const PacketPtr& pkt);
 
   // Deliver an ordinary data frame upward, through LLR when it is enabled and
-  // straight to the MAC client when it is not.
-  void deliverData(PacketPtr pkt);
+  // straight to the MAC client when it is not. LLR classifies the frame by the
+  // sequence number it was sent with.
+  void deliverData(EthernetFrame frame);
 
   /**
    * If `pkt` is an ETHERNET_CC frame, apply it to `cbfc_`, or drop it when

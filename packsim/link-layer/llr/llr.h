@@ -28,32 +28,10 @@
 #include "packsim/link-layer/llr/llr-tx-buffer.h"
 #include "packsim/link-layer/llr/llr-types.h"
 #include "packsim/link-layer/tx-packet-source.h"
+#include "packsim/packet/ethernet-frame.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim::llr {
-
-/**
- * One frame returned by `Llr::pullNextNewFrame()`. The packet's LLR
- * header is already stamped via `stampLlrHeader(pkt, type, seq)` before
- * it leaves the helper. Callers forward `pkt` directly to the wire.
- */
-struct PulledFrame {
-  PacketPtr pkt;
-  // LLR_ELIGIBLE or LLR_INELIGIBLE.
-  FrameType type;
-  // Valid only when `type == LLR_ELIGIBLE`; 0 otherwise.
-  uint32_t seq;
-};
-
-/**
- * One frame returned by `Llr::pullNextReplayFrame()`. The packet's LLR
- * header is already stamped as LLR_ELIGIBLE + the buffer-recorded seq.
- * Callers forward `pkt` directly to the wire.
- */
-struct ReplayFrame {
-  PacketPtr pkt;
-  uint32_t seq;
-};
 
 /**
  * Link Level Retry (LLR) module per UEC 1.0.3 §5.1.
@@ -91,11 +69,14 @@ struct ReplayFrame {
  *
  * Outbound data frames flow via the scheduler-driven pull API:
  * `pullNextNewFrame()` for ADVANCE-state admission and
- * `pullNextReplayFrame()` for REPLAY-state retransmits. Both stamp the
- * LLR header and bump stats internally, so the wire driver
- * (`TxArbiter::nextOutboundFrame`) only has to forward the
- * returned packet to the wire and call back via `notifyNewFrameTransmitted`
- * / `notifyReplayFrameTransmitted` at TX-complete time.
+ * `pullNextReplayFrame()` for REPLAY-state retransmits. Both return an
+ * `EthernetFrame` carrying the sequence number of this transmission and bump
+ * stats internally, so the wire driver (`TxArbiter::nextOutboundFrame`) only
+ * has to forward the frame to the wire and call back via
+ * `notifyNewFrameTransmitted` / `notifyReplayFrameTransmitted` at TX-complete
+ * time. The sequence number never goes on the shared `Packet`: every hop on
+ * the packet's path holds the same object, and a replay resends it while the
+ * next hop may already be forwarding it.
  *
  * `pullNextNewFrame()` reads the upstream per-CoS queues through the
  * `TxPacketSource` interface (see `tx-packet-source.h`). The owning
@@ -141,7 +122,7 @@ struct ReplayFrame {
  *
  *   - `rxFrame()` / `rxCtlos()`: full §5.1.7 / §5.1.9 handling.
  *   - `pullNextNewFrame()` / `pullNextReplayFrame()`: called by the wire
- *     driver per frame; share `admissionDecision` + `stampLlrHeader`.
+ *     driver per frame; share `admissionDecision`.
  */
 class Llr : public ICtlosSource {
  public:
@@ -497,8 +478,8 @@ class Llr : public ICtlosSource {
   // The wire driver (`LinkLayerScheduler` +
   // `TxArbiter::nextOutboundFrame`) calls two pull helpers
   // (`pullNextReplayFrame` in REPLAY, `pullNextNewFrame` in every other TX
-  // state). Both stamp + bump stats internally so `TxArbiter` only
-  // forwards the returned packet.
+  // state). Both bump stats internally so `TxArbiter` only forwards the
+  // returned frame.
   //
   // The owning port installs a wake callback through
   // `setOnSchedulerWakeCallback` so `Llr` can pulse the scheduler on state
@@ -587,13 +568,10 @@ class Llr : public ICtlosSource {
 
   /**
    * Admit a frame to the replay buffer: reserve the current `tx_seq`, store
-   * the frame, bump `stats_.txOk`, advance `tx_seq`, and stamp the frame
-   * LLR_ELIGIBLE with the reserved sequence number.
-   *
-   * Stamping is part of admission rather than a separate step the caller
-   * performs, because the two must not come apart: a frame sitting in the
-   * replay buffer whose header still reads LLR-ineligible is sequenced as far
-   * as this sender is concerned and unsequenced as far as the peer is.
+   * the frame, bump `stats_.txOk` and advance `tx_seq`. The caller MUST
+   * transmit the frame with the returned sequence number in its
+   * `EthernetFrame::llrSeq`: a buffered frame sent without it is sequenced as
+   * far as this sender is concerned and unsequenced as far as the peer is.
    *
    * Most frames arrive here through `pullNextNewFrame`. A CBFC CC_Update calls
    * it directly — UEC 1.0.3 §5.2.9 requires a CC_Update to be LLR-eligible and
@@ -606,7 +584,7 @@ class Llr : public ICtlosSource {
    * the frame and it MUST NOT be transmitted — an unsequenced send leaves the
    * peer waiting on a sequence number that never arrives.
    *
-   * @param packet  The frame to admit; stamped in place on success.
+   * @param packet  The frame to admit.
    *
    * @return        The reserved sequence number, or nullopt if the replay
    *                buffer is full.
@@ -618,49 +596,37 @@ class Llr : public ICtlosSource {
   /**
    * Pull the next new (non-replay) frame from `packetSource_`'s CoS queues,
    * dispatching on `admissionDecision`:
-   *   - `ADMIT_AND_TX`    → admit + stamp ELIGIBLE; return frame with
-   *                         type=LLR_ELIGIBLE, seq=assigned
-   *   - `PASSTHROUGH_TX`  → stamp INELIGIBLE; return frame with
-   *                         type=LLR_INELIGIBLE, seq=0
+   *   - `ADMIT_AND_TX`    → admit; return the frame with the assigned
+   *                         `llrSeq`
+   *   - `PASSTHROUGH_TX`  → return the frame with no `llrSeq`
    *   - `DROP`            → pop, bump `stats_.txDiscard`, return nullopt
    *   - `BLOCK`           → return nullopt; packet stays in queue
-   * Returns `nullopt` when the queue is empty.
-   *
-   * The returned packet's LLR header is already stamped; callers
-   * forward it directly to the wire.
    *
    * Pre-condition: `setTxPacketSource(source)` must have been called
    * (XCHECKs `packetSource_ != nullptr`).
+   *
+   * @return  The frame, carrying its `llrSeq` when admitted, or nullopt when
+   *          the queue is empty, the head is blocked, or it was discarded.
    */
-  [[nodiscard]] std::optional<PulledFrame> pullNextNewFrame();
+  [[nodiscard]] std::optional<EthernetFrame> pullNextNewFrame();
 
   /**
    * Pull the next REPLAY-state frame from the unacked-range snapshot.
    * Lazy-snapshots `txBuffer_->snapshotUnackedRange()` on first call
    * per REPLAY entry (held in `replaySnap_` + `replayNextSeq_`);
    * skips seqs that `lookup` returns null for (ACKed since snapshot);
-   * stamps the LLR header and bumps `stats_.txReplay` /
+   * bumps `stats_.txReplay` /
    * `stats_.txReplayBytes` before returning. Returns `nullopt` when
    * the snapshot is exhausted (cursor auto-resets to nullopt when
    * drained so the next REPLAY entry re-snapshots cleanly).
    *
    * Called once per frame by the wire driver while the TX SM is in
    * REPLAY.
-   */
-  [[nodiscard]] std::optional<ReplayFrame> pullNextReplayFrame();
-
-  /**
-   * Stamp `pkt`'s LlrHeader for a wire emission of `(type, seq)`.
-   * Used by `pullNextNewFrame` and `pullNextReplayFrame` so the wire
-   * driver receives an already-stamped packet — no LLR-header
-   * knowledge required outside this module.
    *
-   * For `LLR_ELIGIBLE`: enabled=true, seqNum=seq.
-   * For `LLR_INELIGIBLE`: enabled=false (pass-through frame; `seqNum` is
-   * left untouched, since it is meaningful only when `enabled==true`).
+   * @return  The frame with the sequence number it was buffered under, or
+   *          `nullopt` once the snapshot is exhausted.
    */
-  static void
-  stampLlrHeader(const PacketPtr& pkt, FrameType type, uint32_t seq);
+  [[nodiscard]] std::optional<EthernetFrame> pullNextReplayFrame();
 
   /**
    * Build the `LlrCtlosFrame` that carries the pending report `f` onto the

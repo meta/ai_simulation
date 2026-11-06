@@ -19,7 +19,7 @@
 #include "packsim/kernel/scheduler.h"
 #include "packsim/kernel/sim-context.h"
 #include "packsim/kernel/time.h"
-#include "packsim/packet/ptr/PacketPtr.h"
+#include "packsim/packet/ethernet-frame.h"
 
 namespace packsim {
 class EthernetChannel;
@@ -168,28 +168,28 @@ class LinkLayerScheduler final {
   };
 
   /**
-   * Put `pkt` on the wire: compute its serialization time and start
+   * Put `frame` on the wire: compute its serialization time and start
    * serializing it on the channel. The caller waits `txComplete` (or, in
    * `sendDataFrame`, runs it down on a pausable stopwatch) and then calls
    * `endTx`.
    *
-   * @param pkt   The frame to transmit.
-   * @param kind  Its transmit path.
+   * @param frame  The frame to transmit.
+   * @param kind   Its transmit path.
    *
-   * @return      The frame's serialization time and propagation delay.
+   * @return       The frame's serialization time and propagation delay.
    */
-  TxTiming beginTx(const PacketPtr& pkt, TxKind kind);
+  TxTiming beginTx(const EthernetFrame& frame, TxKind kind);
 
   /**
    * Finish a frame `beginTx` started, once its serialization time has run
    * out: schedule its arrival at the far end and, for a CtlOS, start the
    * §5.2.11.2 spacing budget for the next one.
    *
-   * @param pkt        The frame that finished serializing.
+   * @param frame      The frame that finished serializing.
    * @param propDelay  `TxTiming::propDelay` from its `beginTx`.
    * @param kind       Its transmit path, as passed to `beginTx`.
    */
-  void endTx(const PacketPtr& pkt, Time propDelay, TxKind kind);
+  void endTx(const EthernetFrame& frame, Time propDelay, TxKind kind);
 
   // Trace label of a transmit path: `NONPRE` for a CtlOS, `PRE` otherwise.
   static const char* traceLabel(TxKind kind) noexcept;
@@ -202,15 +202,15 @@ class LinkLayerScheduler final {
    * wire window) and re-arms the stopwatch with whatever wire-time
    * is left.
    *
-   * @param pkt  The data or PFC frame to transmit
-   * @return     Awaitable task that completes when serialization finishes
+   * @param frame  The data or PFC frame to transmit
+   * @return       Awaitable task that completes when serialization finishes
    */
-  coro::SimResultTask<void> sendDataFrame(const PacketPtr& pkt);
+  coro::SimResultTask<void> sendDataFrame(const EthernetFrame& frame);
 
   const folly::not_null<SimContext*> ctx_;
 
   // Wire-medium and self-identity. The scheduler holds these so it
-  // can call `channel_->startSerialize(pkt, port_)` directly without
+  // can call `channel_->startSerialize(frame, port_)` directly without
   // a callback indirection.
   const folly::not_null<EthernetChannel*> channel_;
   // The channel identifies the transmitting endpoint by port, so the

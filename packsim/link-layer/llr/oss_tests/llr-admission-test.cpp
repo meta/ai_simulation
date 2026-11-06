@@ -141,8 +141,7 @@ TEST_F(LlrAdmissionTest, InitBestEffortPassesThroughWithoutConsumingSeq) {
   source_.enqueue(makePacket(100));
   auto pulled = llr.pullNextNewFrame();
   ASSERT_TRUE(pulled.has_value());
-  EXPECT_EQ(pulled->type, FrameType::LLR_INELIGIBLE);
-  EXPECT_EQ(pulled->seq, 0u);
+  EXPECT_EQ(pulled->llrSeq, std::nullopt);
   EXPECT_EQ(llr.stats().txPassthrough, 1u);
   EXPECT_EQ(llr.stats().txOk, 0u);
   EXPECT_EQ(llr.txSeq(), 0u);
@@ -316,8 +315,7 @@ TEST_F(LlrAdmissionTest, AckFreeingSeqSlotReopensAdmission) {
 
   auto pulled = llr.pullNextNewFrame();
   ASSERT_TRUE(pulled.has_value());
-  EXPECT_EQ(pulled->type, FrameType::LLR_ELIGIBLE);
-  EXPECT_EQ(pulled->seq, 2u);
+  EXPECT_EQ(pulled->llrSeq, 2u);
   EXPECT_EQ(llr.outstandingSeq(), 2u);
   EXPECT_EQ(source_.size(), 0u);
 
@@ -452,7 +450,7 @@ TEST_F(LlrAdmissionTest, AdmitAssignsConsecutiveSeqsAndAccumulatesBytes) {
     source_.enqueue(makePacket(payload));
     auto pulled = llr.pullNextNewFrame();
     ASSERT_TRUE(pulled.has_value());
-    EXPECT_EQ(pulled->type, FrameType::LLR_ELIGIBLE);
+    EXPECT_TRUE(pulled->llrSeq.has_value());
     llr.notifyNewFrameTransmitted();
   }
 

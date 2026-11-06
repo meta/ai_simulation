@@ -14,8 +14,9 @@ namespace packsim {
 /**
  * An LLR Control Ordered Set type, from UEC §5.1.3.1.1 Tbl 5-7 p. 467.
  *
- * LLR DATA is absent because a data frame is an ordinary Ethernet frame
- * carrying `EthernetPacket::llrHeader`, not an ordered set.
+ * LLR DATA is absent because a data frame is an ordinary Ethernet frame,
+ * sent with its sequence number in `EthernetFrame::llrSeq`, not an ordered
+ * set.
  *
  * There is no zero-valued sentinel, because a `LlrCtlosSlots` slot expresses
  * absence with `std::optional`.

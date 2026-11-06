@@ -93,20 +93,6 @@ enum class PacketType : uint8_t {
 }
 
 /**
- * The Link Level Retry sequence number stamped on a data frame.
- *
- * The number rides in the Ethernet preamble, so it adds nothing to the frame
- * size. A receiver draws only one distinction, eligible or ineligible, and
- * `enabled` records it. There is no frame-type field, because the four LLR
- * control types are `LlrCtlosFrame`s rather than Ethernet frames.
- */
-struct LlrHeader {
-  // True when this frame was assigned a sequence number and may be replayed.
-  bool enabled{false};
-  uint32_t seqNum{0};
-};
-
-/**
  * CBFC (Credit-Based Flow Control, UEC §5.2) CC_Update message type
  * (Tbl 5-22): which 16-VC range the carried S_VC_CC values cover.
  *
@@ -286,7 +272,6 @@ struct EthernetPacket : Packet {
   void reset() override {
     Packet::reset();
     headerSize += EthernetPacket::kEthernetHeaderSize;
-    llrHeader = LlrHeader{};
   }
 
   // IEEE 802.3 minimum frame, which a short frame is padded up to.
@@ -304,8 +289,6 @@ struct EthernetPacket : Packet {
   // (post-frame IFG).
   static constexpr uint32_t kEthernetHeaderSize =
       2 * kMacAddrSize + kEthertypeSize + kVlanTagSize + kTrailerSize;
-
-  LlrHeader llrHeader;
 };
 
 /**
@@ -320,8 +303,9 @@ struct EthernetPacket : Packet {
  * `headerSize` does not decompose and stays 0. PHY-layer additions come from
  * `EthernetPacket::getPhyFrameSize()` / `getInterFrameGapSize()`.
  *
- * LLR treatment is NOT shared and belongs to each subclass: §5.2.9 makes PFC
- * LLR-ineligible and CC_Update LLR-eligible with a sequence number.
+ * LLR treatment is NOT shared: §5.2.9 makes PFC LLR-ineligible and CC_Update
+ * LLR-eligible with a sequence number, which `TxArbiter` carries in the
+ * CC_Update's `EthernetFrame`.
  */
 struct MacControlFrame : EthernetPacket {
  public:
@@ -382,11 +366,6 @@ struct EthernetCcPacket : MacControlFrame {
   void reset() override {
     // Skip EthernetPacket::reset() — see `MacControlFrame` on frame semantics.
     Packet::reset();
-    // Unlike PFC, a CC_Update is LLR-eligible by default (UEC §5.2.9), so it
-    // is stamped with a sequence number by `Llr::admit`. A pooled frame
-    // therefore comes back carrying one, and the pool is shared with ports
-    // that have LLR disabled.
-    llrHeader = LlrHeader{};
     msgType = CbfcCcMsgType::VC_0_15;
     sVcCc.fill(0);
   }

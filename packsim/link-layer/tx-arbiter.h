@@ -12,6 +12,7 @@
 #include <optional>
 
 #include "packsim/link-layer/ctlos-arbiter.h"
+#include "packsim/packet/ethernet-frame.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim {
@@ -33,7 +34,7 @@ class EthernetPort;
  * Example usage:
  *
  *      if (auto frame = arbiter.nextOutboundFrame()) {
- *        co_await transmit(frame->pkt);
+ *        co_await transmit(frame->frame);
  *        arbiter.onFrameTransmitted(*frame);
  *      }
  *
@@ -65,16 +66,19 @@ class TxArbiter {
   };
 
   /**
-   * One frame handed to the wire driver. `pkt`'s LLR header is already
-   * stamped for the LLR kinds and any pop-time statistics are already bumped.
+   * One frame handed to the wire driver, with any pop-time statistics already
+   * bumped.
    */
   struct OutboundFrame {
     // The driver treats a frame as an immutable handoff (transmit, then
     // notify) and holds it `const`. The members themselves are not `const`,
-    // so returning a frame inside `std::optional` moves `pkt` instead of
+    // so returning a frame inside `std::optional` moves the packet instead of
     // copying the shared pointer.
-    PacketPtr pkt;
-    TxKind kind;
+    //
+    // What goes on the wire. It carries an LLR sequence number exactly when
+    // `kind` is `LLR_NEW` or `LLR_REPLAY`, or for a sequenced CC_Update.
+    EthernetFrame frame;
+    TxKind kind{};
   };
 
   /**
@@ -152,10 +156,11 @@ class TxArbiter {
    * Take the pending CC_Update if it can be transmitted now, sequencing it
    * into the LLR replay buffer when configured LLR-eligible.
    *
-   * @return  The frame, or `nullopt` when none is pending or UEC §5.2.9
-   *          forbids sending it yet.
+   * @return  The frame, with its LLR sequence number when sequenced, or
+   *          `nullopt` when none is pending or UEC §5.2.9 forbids sending it
+   *          yet.
    */
-  [[nodiscard]] std::optional<PacketPtr> popCcUpdateIfSendable();
+  [[nodiscard]] std::optional<EthernetFrame> popCcUpdateIfSendable();
 
   /**
    * Shared post-transmit accounting for data frames. Bumps per-CoS transmit

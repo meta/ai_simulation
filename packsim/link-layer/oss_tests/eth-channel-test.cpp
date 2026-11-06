@@ -214,7 +214,7 @@ TEST_F(EthChannelTest, ScheduleRemoteReceiveDeliversToPeerPort) {
   const Time deliveryDelay = Time::fromNs(500);
 
   simCtx_.scheduleNow([this, &channel, pkt, deliveryDelay]() {
-    channel.scheduleRemoteReceive(pkt, port1_.get(), deliveryDelay);
+    channel.scheduleRemoteReceive({.pkt = pkt}, port1_.get(), deliveryDelay);
   });
   scheduler_.run();
 
@@ -235,7 +235,7 @@ TEST_F(EthChannelTest, ScheduleRemoteReceiveResolvesPeerFromSecondEnd) {
   const Time deliveryDelay = Time::fromNs(500);
 
   simCtx_.scheduleNow([this, &channel, pkt, deliveryDelay]() {
-    channel.scheduleRemoteReceive(pkt, port2_.get(), deliveryDelay);
+    channel.scheduleRemoteReceive({.pkt = pkt}, port2_.get(), deliveryDelay);
   });
   scheduler_.run();
 
@@ -257,7 +257,7 @@ TEST_F(EthChannelTest, SendPacketDeliversToExplicitDestination) {
   const Time deliveryDelay = Time::fromNs(500);
 
   simCtx_.scheduleNow([this, &channel, pkt, deliveryDelay]() {
-    channel.sendPacket(pkt, port1_.get(), deliveryDelay);
+    channel.sendPacket({.pkt = pkt}, port1_.get(), deliveryDelay);
   });
   scheduler_.run();
 

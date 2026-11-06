@@ -13,7 +13,7 @@
 #include <folly/portability/GFlags.h>
 
 #include "packsim/packet/base.h"
-#include "packsim/packet/ptr/PacketPtr.h"
+#include "packsim/packet/ethernet-frame.h"
 
 namespace packsim {
 
@@ -38,28 +38,21 @@ int traceType(const LlrCtlosType type) noexcept {
 }
 } // namespace
 
-// Every `as<>` here is guarded by an `is<>` test, and none of them uses the
+// The `as<>` here is guarded by an `is<>` test and does not use the
 // `UseDynamicCast` overload. `PacketPtr::as<>` is annotated `FOLLY_NONNULL`
 // for every instantiation, including that overload, so a `dynamic_cast` that
 // legitimately returns null through it is undefined behaviour that only
-// surfaces under a sanitizer build. This function runs on every traced frame,
-// so packets matching neither branch are the common case rather than an edge.
-LlrTraceFields LlrTraceFields::extractFrom(const PacketPtr& pkt) noexcept {
-  LlrTraceFields fields;
-  if (pkt.is<LlrCtlosFrame>()) {
-    const auto* ctlos = pkt.as<LlrCtlosFrame>();
-    fields.type = traceType(ctlos->payload.type);
-    fields.seq = ctlos->payload.seq;
-    return fields;
+// surfaces under a sanitizer build.
+LlrTraceFields LlrTraceFields::extractFrom(
+    const EthernetFrame& frame) noexcept {
+  if (frame.pkt.is<LlrCtlosFrame>()) {
+    const auto* ctlos = frame.pkt.as<LlrCtlosFrame>();
+    return {.type = traceType(ctlos->payload.type), .seq = ctlos->payload.seq};
   }
-  if (pkt.is<EthernetPacket>()) {
-    const auto* eth = pkt.as<EthernetPacket>();
-    if (eth->llrHeader.enabled) {
-      fields.type = kTraceLlrData;
-      fields.seq = eth->llrHeader.seqNum;
-    }
+  if (frame.llrSeq.has_value()) {
+    return {.type = kTraceLlrData, .seq = *frame.llrSeq};
   }
-  return fields;
+  return {};
 }
 
 } // namespace packsim

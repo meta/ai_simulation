@@ -148,18 +148,6 @@ TEST(PacketTest, AnLlrCtlosFrameGetsNoPreambleOrGap) {
   EXPECT_EQ(0u, ctlos.getInterFrameGapSize());
 }
 
-// An LLR DATA frame is an ordinary Ethernet frame that happens to carry a
-// sequence number in its preamble, so enabling LLR must not change any of its
-// framing numbers.
-TEST(PacketTest, AnLlrDataFrameKeepsNormalEthernetFraming) {
-  EthernetPacket eth(100);
-  eth.llrHeader.enabled = true;
-  eth.llrHeader.seqNum = 42;
-
-  EXPECT_EQ(eth.getSize(), 122u);
-  EXPECT_EQ(eth.getPhyFrameSize(), 130u);
-}
-
 // FIXME: the IFG is forced to 0 for every Ethernet frame to work
 // around a multi-threaded PDES race in switch buffer accounting; see
 // EthernetPacket::getInterFrameGapSize() in packet/base.h. Pinned here so the
@@ -175,21 +163,17 @@ TEST(PacketTest, EveryEthernetFrameCurrentlyReportsNoInterFrameGap) {
 
 // ── Recycling ────────────────────────────────────────────────────────────────
 
-// Packets are pooled and reused, so reset() has to clear LLR state too --
-// otherwise a recycled frame is acknowledged under the previous user's
-// sequence number.
-TEST(PacketTest, ResetClearsStaleLlrState) {
+// Packets are pooled and reused, so reset() has to restore the Ethernet header
+// a recycled frame starts from.
+TEST(PacketTest, ResetRestoresTheEthernetHeader) {
   EthernetPacket eth(100);
-  eth.llrHeader.enabled = true;
-  eth.llrHeader.seqNum = 42;
 
   eth.reset();
 
-  EXPECT_FALSE(eth.llrHeader.enabled);
-  EXPECT_EQ(eth.llrHeader.seqNum, 0u);
-  // reset() also clears the payload, so the frame falls to the 64-byte
+  // reset() clears the payload, so the frame falls to the 64-byte
   // Ethernet minimum (the 22-byte header alone is under it) and the PHY size
   // is that plus the 8-byte preamble.
+  EXPECT_EQ(eth.headerSize, EthernetPacket::kEthernetHeaderSize);
   EXPECT_EQ(eth.getSize(), 64u);
   EXPECT_EQ(eth.getPhyFrameSize(), 72u);
 }
@@ -427,10 +411,6 @@ TEST(PacketTest, CcUpdatePoolRoundTripYieldsAFreshFrame) {
   returned->msgType = CbfcCcMsgType::VC_16_31;
   returned->sVcCc[3] = 800008;
   returned->heldCredits = 4;
-  // A CC_Update is pulled through the LLR data path and comes back stamped
-  // (UEC §5.2.7.2), and the pool is shared with LLR-disabled ports, so a
-  // recycled frame must not keep the previous port's sequence number.
-  returned->llrHeader = LlrHeader{.enabled = true, .seqNum = 99};
   GlobalManager::returnPacket(returned);
 
   auto pkt = createPacket<PacketType::ETHERNET_CC>();
@@ -443,8 +423,6 @@ TEST(PacketTest, CcUpdatePoolRoundTripYieldsAFreshFrame) {
   EXPECT_EQ(CbfcCcMsgType::VC_0_15, fresh->msgType);
   EXPECT_EQ(0u, fresh->sVcCc[3]);
   EXPECT_EQ(0u, fresh->heldCredits);
-  EXPECT_FALSE(fresh->llrHeader.enabled);
-  EXPECT_EQ(0u, fresh->llrHeader.seqNum);
   EXPECT_EQ(EthernetPacket::kMinEthernetFrameSizeBytes, fresh->getSize());
 }
 

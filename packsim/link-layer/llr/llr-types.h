@@ -89,12 +89,12 @@ enum class FrameType : uint8_t {
 enum class AdmissionResult : uint8_t {
   UNKNOWN = 0, // Default-constructed sentinel — never valid at runtime.
   // ADVANCE + capacity OK. Caller consumes the packet, admits it to
-  // the replay buffer (assigns `tx_seq`, stores), stamps `LLR_ELIGIBLE
-  // + seq`, and transmits. This is the spec's happy path.
+  // the replay buffer (assigns `tx_seq`, stores), and transmits it with
+  // that sequence number. This is the spec's happy path.
   ADMIT_AND_TX,
   // LLR_OFF state, or INIT/FLUSH with `BEST_EFFORT`. Caller consumes
-  // the packet but does NOT admit to the replay buffer; stamps
-  // `LLR_INELIGIBLE` and transmits as a pass-through frame.
+  // the packet but does NOT admit to the replay buffer, and transmits it
+  // without a sequence number as a pass-through frame.
   PASSTHROUGH_TX,
   // INIT/FLUSH with `DISCARD`. Caller consumes the packet and drops
   // it; bumps `stats_.txDiscard`.

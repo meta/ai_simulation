@@ -46,14 +46,15 @@ constexpr uint8_t kHopLimitTtldBit = 0x80;
 // Nanoseconds per microsecond, for the link-flap log line.
 constexpr uint64_t kNsPerMicrosecond = 1000;
 
-// Mirror of `emitTraceTx` in `eth-channel.cpp`. Shared LLR-header
+// Mirror of `emitTraceTx` in `eth-channel.cpp`. The shared LLR column
 // extraction lives in `wire-trace-flag.h`; the TX/RX-specific tag and
 // role label differ enough that the XLOG lines stay separate.
-void emitTraceRx(const PacketPtr& pkt, const EthernetPort& dst) noexcept {
+void emitTraceRx(const EthernetFrame& frame, const EthernetPort& dst) noexcept {
   if (!FLAGS_packsim_trace_wire_events) {
     return;
   }
-  const auto llr = LlrTraceFields::extractFrom(pkt);
+  const PacketPtr& pkt = frame.pkt;
+  const auto llr = LlrTraceFields::extractFrom(frame);
   XLOGF(
       INFO,
       "TRACE-RX T={:014} dst={}/{} pkt={} llr={} seq={} size={}",
@@ -145,41 +146,42 @@ void EthernetPort::updatePeriodicStats() {
 }
 
 /**
- * Receive a packet through this port with optional receive latency.
+ * Receive a frame through this port with optional receive latency.
  *
- * @param pkt The packet to receive. The port takes this handle over.
+ * @param frame The frame to receive. The port takes its packet handle over.
  */
-void EthernetPort::receive(PacketPtr pkt) {
+void EthernetPort::receive(EthernetFrame frame) {
   if (rxLatencyNs_ > 0) {
     simCtx_->schedule(
         Time::fromNs(rxLatencyNs_),
         &EthernetPort::doReceive,
         this,
-        std::move(pkt));
+        std::move(frame));
   } else {
-    doReceive(std::move(pkt));
+    doReceive(std::move(frame));
   }
 }
 
-void EthernetPort::doReceive(PacketPtr pkt) {
-  emitTraceRx(pkt, *this);
+void EthernetPort::doReceive(EthernetFrame frame) {
+  emitTraceRx(frame, *this);
 
-  if (dropIfBitError(pkt)) {
+  if (dropIfBitError(frame)) {
     return;
   }
-  if (dropIfLinkDown(pkt)) {
+  if (dropIfLinkDown(frame)) {
     return;
   }
-  if (dispatchCtlosFrame(pkt)) {
+  if (dispatchCtlosFrame(frame.pkt)) {
     return;
   }
-  if (dispatchMacControlFrame(pkt)) {
+  if (dispatchMacControlFrame(frame.pkt)) {
     return;
   }
-  deliverData(std::move(pkt));
+  deliverData(std::move(frame));
 }
 
-std::string EthernetPort::getPacketRepr(const PacketPtr& pkt) const {
+std::string EthernetPort::getPacketRepr(const EthernetFrame& frame) const {
+  const PacketPtr& pkt = frame.pkt;
   // Every field is always present and in a fixed order, so a drop log can be
   // grepped and parsed across frame kinds. A field that does not apply to this
   // kind keeps its "N/A".
@@ -200,9 +202,8 @@ std::string EthernetPort::getPacketRepr(const PacketPtr& pkt) const {
     }
     // Reached for data frames and for CC_Update, a MAC control frame that can
     // still be LLR-eligible.
-    const auto* eth = pkt.tryAs<EthernetPacket>();
-    if (eth != nullptr && eth->llrHeader.enabled) {
-      llrSeq = fmt::to_string(eth->llrHeader.seqNum);
+    if (frame.llrSeq.has_value()) {
+      llrSeq = fmt::to_string(*frame.llrSeq);
     }
   }
 
@@ -218,7 +219,8 @@ std::string EthernetPort::getPacketRepr(const PacketPtr& pkt) const {
       simCtx_->nowNs());
 }
 
-bool EthernetPort::dropIfBitError(const PacketPtr& pkt) {
+bool EthernetPort::dropIfBitError(const EthernetFrame& frame) {
+  const PacketPtr& pkt = frame.pkt;
   static constexpr double kMaxBer = 1.0;
   const double ber = rxBerOverride_.has_value()
       ? *rxBerOverride_
@@ -235,7 +237,7 @@ bool EthernetPort::dropIfBitError(const PacketPtr& pkt) {
     return false;
   }
 
-  XLOGF(DBG2, "BER drop on {}: {}", flexId_.toString(), getPacketRepr(pkt));
+  XLOGF(DBG2, "BER drop on {}: {}", flexId_.toString(), getPacketRepr(frame));
   if (pkt.is<CtlosFrame>()) {
     // Nothing to account: an ordered set has no CoS to charge and no observer
     // expecting it.
@@ -248,7 +250,8 @@ bool EthernetPort::dropIfBitError(const PacketPtr& pkt) {
   return true;
 }
 
-bool EthernetPort::dropIfLinkDown(const PacketPtr& pkt) {
+bool EthernetPort::dropIfLinkDown(const EthernetFrame& frame) {
+  const PacketPtr& pkt = frame.pkt;
   if (channelState_ != ChannelState::DOWN) {
     return false;
   }
@@ -257,7 +260,7 @@ bool EthernetPort::dropIfLinkDown(const PacketPtr& pkt) {
       "LINK_DOWN_DROP(doReceive): src {} dst {}: {}",
       getPeerFlexDeviceId().toString(),
       flexId_.toString(),
-      getPacketRepr(pkt));
+      getPacketRepr(frame));
   if (pkt.is<CtlosFrame>()) {
     // Nothing to account: an ordered set has no CoS to charge and no observer
     // expecting it.
@@ -311,7 +314,8 @@ bool EthernetPort::dispatchMacControlFrame(const PacketPtr& pkt) {
   return false;
 }
 
-void EthernetPort::deliverData(PacketPtr pkt) {
+void EthernetPort::deliverData(EthernetFrame frame) {
+  PacketPtr pkt = std::move(frame.pkt);
   // Restore socket-level QPConnection for port-level addressed packets. This
   // must happen BEFORE delivery so the upper layer's transport routing finds
   // the right socket.
@@ -324,15 +328,12 @@ void EthernetPort::deliverData(PacketPtr pkt) {
   // the ACK/NACK SM, then says whether this frame reaches the MAC client. It
   // is a filter in front of the delivery below, not a second delivery path.
   if (llr_) {
-    // `as<>` is a static_cast and never returns null, so the type must be
-    // tested first: a non-Ethernet frame has no `llrHeader` to read.
-    const auto* eth = pkt.tryAs<EthernetPacket>();
-    const llr::FrameType type = (eth && eth->llrHeader.enabled)
+    const llr::FrameType type = frame.llrSeq.has_value()
         ? llr::FrameType::LLR_ELIGIBLE
         : llr::FrameType::LLR_INELIGIBLE;
-    const uint32_t seq = eth ? eth->llrHeader.seqNum : 0u;
     // PackSim doesn't model FCS errors at the wire level; always GOOD.
-    if (llr_->rxFrame(pkt, type, llr::FcsStatus::GOOD, seq) ==
+    if (llr_->rxFrame(
+            pkt, type, llr::FcsStatus::GOOD, frame.llrSeq.value_or(0)) ==
         llr::Llr::RxDisposition::DROP) {
       return;
     }

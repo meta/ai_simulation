@@ -645,7 +645,7 @@ TEST_F(LlrTxTest, ReinitAfterModeRemoteToggleAdmitsFromSeqZero) {
   const auto pulled = llr.pullNextNewFrame();
 
   ASSERT_TRUE(pulled.has_value());
-  EXPECT_EQ(pulled->seq, 0u);
+  EXPECT_EQ(pulled->llrSeq, 0u);
   EXPECT_EQ(llr.outstandingSeq(), 1u);
   llr.shutdown();
   scheduler().run();
@@ -685,7 +685,7 @@ TEST_F(LlrTxTest, FrameAdmittedBeforeLlrOffIsDiscardedWhenModeRemoteReturns) {
   const auto pulled = llr.pullNextNewFrame();
 
   ASSERT_TRUE(pulled.has_value());
-  EXPECT_EQ(pulled->seq, 0u);
+  EXPECT_EQ(pulled->llrSeq, 0u);
   llr.shutdown();
   scheduler().run();
 }
