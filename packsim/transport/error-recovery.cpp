@@ -26,9 +26,9 @@ namespace packsim {
 namespace {
 
 // Balance gap-recovery latency against periodic-NACK wire overhead.
-const Time kNackResendInterval = Time::fromUs(100);
+constexpr Duration kNackResendInterval = Duration::fromUs(100);
 // Avoid scheduling two NACKs on the same tick after RNR back-off rounding.
-const Time kRnrResendJitter = Time::fromUs(1);
+constexpr Duration kRnrResendJitter = Duration::fromUs(1);
 
 } // namespace
 
@@ -214,7 +214,7 @@ void GoBackNRecovery::onNack(
   if (rnrBackoffIdx.has_value()) {
     rnrEvent_.cancel();
     rnrEvent_ = simCtx_->schedule(
-        rnrFieldToTime(*rnrBackoffIdx),
+        rnrFieldToDuration(*rnrBackoffIdx),
         &ErrorRecoverySocket::wakeupForSend,
         socket_);
   } else {
@@ -274,17 +274,17 @@ void GoBackNRecovery::scheduleNackResend(
     uint32_t psn,
     const std::optional<uint8_t> rnrBackoffIdx) {
   // Self-rescheduling: each invocation emits one NACK and queues itself to
-  // run again after `resendTime`. checkPsn() cancels either a gap- or
+  // run again after `resendDelay`. checkPsn() cancels either a gap- or
   // RNR-triggered chain when it accepts the expected PSN; the destructor
   // cancels any chain still pending.
   socket_->emitNackPacket(seqNum, psn, rnrBackoffIdx);
-  const auto resendTime = rnrBackoffIdx.has_value()
-      ? rnrFieldToTime(*rnrBackoffIdx) + kRnrResendJitter
+  const Duration resendDelay = rnrBackoffIdx.has_value()
+      ? rnrFieldToDuration(*rnrBackoffIdx) + kRnrResendJitter
       : kNackResendInterval;
-  const auto now = simCtx_->now();
-  XLOGF(DBG2, "Sending NACK at {}; resend at {}", now, now + resendTime);
+  const Time now = simCtx_->now();
+  XLOGF(DBG2, "Sending NACK at {}; resend at {}", now, now + resendDelay);
   nackEvent_ = simCtx_->schedule(
-      resendTime,
+      resendDelay,
       &GoBackNRecovery::scheduleNackResend,
       this,
       seqNum,
@@ -399,8 +399,8 @@ void GoBackNRecovery::failRecovery() {
   rnrEvent_.cancel();
 }
 
-Time GoBackNRecovery::rnrFieldToTime(const uint8_t rnrField) {
-  return Time::fromUs(
+Duration GoBackNRecovery::rnrFieldToDuration(const uint8_t rnrField) {
+  return Duration::fromUs(
       packsim::thrift::roce_v2_config_constants::kGoBackNRnrFieldToTimeUs().at(
           rnrField));
 }

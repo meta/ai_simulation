@@ -18,6 +18,7 @@
 #include <folly/memory/not_null.h>
 
 #include "packsim/if/gen-cpp2/config_types.h"
+#include "packsim/kernel/duration.h"
 #include "packsim/kernel/scheduler.h"
 #include "packsim/kernel/sim-context.h"
 #include "packsim/transport/roce-send-info.h"
@@ -422,8 +423,16 @@ class GoBackNRecovery final : public ErrorRecovery {
     return lastReceivedPsn_;
   }
 
-  // Convert RNR field value to simulation time.
-  static Time rnrFieldToTime(uint8_t rnrField);
+  /**
+   * RNR back-off delay that an RNR field value encodes, e.g. 10 us for field 1.
+   *
+   * @param rnrField  Index into `kGoBackNRnrFieldToTimeUs`.
+   *
+   * @return          The back-off delay.
+   *
+   * @throw std::out_of_range if `rnrField` is past the end of the table.
+   */
+  static Duration rnrFieldToDuration(uint8_t rnrField);
 
  private:
   enum class RetransmitTrigger { NACK, TIMER };

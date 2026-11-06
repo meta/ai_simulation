@@ -13,6 +13,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "packsim/kernel/duration.h"
 #include "packsim/transport/error-recovery.h"
 #include "packsim/transport/roce-send-info.h"
 
@@ -608,8 +609,13 @@ TEST_F(GoBackNRecoveryTest, OooModeRepairsOneGapPerNack) {
   EXPECT_FALSE(recovery.hasRetransmitPending());
 }
 
-TEST_F(GoBackNRecoveryTest, RnrFieldToTimeIndexZeroDoesNotThrow) {
-  EXPECT_NO_THROW(GoBackNRecovery::rnrFieldToTime(0));
+TEST_F(GoBackNRecoveryTest, RnrFieldToDurationIndexZeroDoesNotThrow) {
+  EXPECT_NO_THROW(GoBackNRecovery::rnrFieldToDuration(0));
+}
+
+TEST_F(GoBackNRecoveryTest, RnrFieldToDurationReadsTheRnrTimerTable) {
+  // InfiniBand RNR NAK timer encoding: field 1 is 0.01 ms.
+  EXPECT_EQ(GoBackNRecovery::rnrFieldToDuration(1), Duration::fromUs(10));
 }
 
 } // namespace packsim

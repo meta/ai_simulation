@@ -63,6 +63,8 @@ on `main` has the detail.
   workload unless every NIC could be paired; it now rejects it only when no NIC
   pair has a path. Where every NIC can be paired, the selected paths are
   unchanged.
+- `GoBackNRecovery::rnrFieldToTime()` is now `rnrFieldToDuration()` and
+  returns a `Duration`: the RNR back-off is a span of time, not a point.
 
 ### Fixed
 
