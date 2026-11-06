@@ -16,6 +16,7 @@
 
 #include "packsim/link-layer/llr/llr-seq.h"
 #include "packsim/link-layer/llr/llr-types.h"
+#include "packsim/packet/base.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim::llr {
@@ -68,8 +69,9 @@ class LlrTxBuffer {
     if (currentBytes_ + size > maxBytes_) {
       return false;
     }
+    const auto marks = SentMarks::readFrom(pkt);
     const auto [it, inserted] =
-        entries_.emplace(seq, Entry{std::move(pkt), size});
+        entries_.emplace(seq, Entry{std::move(pkt), size, marks});
     // Caller (`Llr::admit`) is the sole arbiter of `tx_seq` and must
     // never reuse a still-unacked seq — duplicate insert here means the
     // 20-bit sequence space wrapped past `outstanding_seq_max` without
@@ -137,10 +139,52 @@ class LlrTxBuffer {
     return entries_.contains(seq);
   }
 
+  /**
+   * The marks a frame carried when it was first sent: its ECN codepoint and
+   * IPv6 hop limit. Hops downstream rewrite both on the shared packet (a queue
+   * marks congestion experienced, a switch decrements the hop limit), so a
+   * replay is counted with these instead.
+   */
+  struct SentMarks {
+    // ECN codepoint as sent, e.g. ECN_CE when a queue on this port marked it.
+    Ipv6Packet::EcnType ecn;
+    // IPv6 hop limit as sent; bit 7 (0x80) is the TTL mark the `*TtldPkts`
+    // counters count, e.g. 192 for a RoCE retransmission.
+    uint8_t hopLimit;
+
+    /**
+     * Read the marks `pkt` carries now.
+     *
+     * @param pkt  Any packet.
+     *
+     * @return     Its ECN codepoint and hop limit, or nullopt when it is not
+     *             an IPv6 packet.
+     */
+    [[nodiscard]] static std::optional<SentMarks> readFrom(
+        const PacketPtr& pkt) noexcept {
+      const auto* ip = pkt.tryAs<Ipv6Packet>();
+      if (ip == nullptr) {
+        return std::nullopt;
+      }
+      return SentMarks{.ecn = ip->ecn, .hopLimit = ip->hopLimit};
+    }
+  };
+
+  // One held frame.
+  struct Entry {
+    // The frame, shared with every hop on its path.
+    PacketPtr packet;
+    // Cached for fast removeUpTo accounting.
+    uint32_t size;
+    // The marks of its first transmission, taken when it was admitted;
+    // nullopt for a frame that is not IPv6.
+    std::optional<SentMarks> sentMarks;
+  };
+
   // Look up the held frame at seq, or nullptr if not present.
-  [[nodiscard]] const PacketPtr* lookup(uint32_t seq) const {
+  [[nodiscard]] const Entry* lookup(uint32_t seq) const {
     const auto it = entries_.find(seq);
-    return it == entries_.end() ? nullptr : &it->second.packet;
+    return it == entries_.end() ? nullptr : &it->second;
   }
 
   /**
@@ -208,12 +252,6 @@ class LlrTxBuffer {
   }
 
  private:
-  struct Entry {
-    PacketPtr packet;
-    // Cached for fast removeUpTo accounting.
-    uint32_t size;
-  };
-
   const uint64_t maxBytes_;
 
   // Keyed by seq for O(log N) lookup. Iteration order is raw-uint32 and

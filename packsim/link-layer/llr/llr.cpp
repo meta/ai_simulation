@@ -388,7 +388,7 @@ std::optional<EthernetFrame> Llr::pullNextNewFrame() {
   return std::nullopt;
 }
 
-std::optional<EthernetFrame> Llr::pullNextReplayFrame() {
+std::optional<ReplayFrame> Llr::pullNextReplayFrame() {
   // Once exhausted in this REPLAY entry, stay null until the next
   // REPLAY entry resets us. Without this gate, a pull after drain would
   // re-snapshot the still-unacked buffer and start the batch again, so a
@@ -421,11 +421,11 @@ std::optional<EthernetFrame> Llr::pullNextReplayFrame() {
   // return or an increment; we terminate when we've consumed or skipped
   // the `lastSeq`.
   while (true) {
-    const PacketPtr* pkt = txBuffer_->lookup(replayNextSeq_);
+    const LlrTxBuffer::Entry* entry = txBuffer_->lookup(replayNextSeq_);
     const bool atLast = (replayNextSeq_ == replaySnap_->lastSeq);
-    if (pkt != nullptr) {
+    if (entry != nullptr) {
       const uint32_t seq = replayNextSeq_;
-      PacketPtr frame = *pkt;
+      PacketPtr frame = entry->packet;
       if (atLast) {
         replaySnap_.reset();
         replaySnapshotExhausted_ = true;
@@ -436,7 +436,10 @@ std::optional<EthernetFrame> Llr::pullNextReplayFrame() {
       // duplicate the accounting — matches the `pullNextNewFrame` pattern.
       ++stats_.txReplay;
       stats_.txReplayBytes += frame->getSize();
-      return EthernetFrame{.pkt = std::move(frame), .llrSeq = seq};
+      return ReplayFrame{
+          .frame = {.pkt = std::move(frame), .llrSeq = seq},
+          .firstSentMarks = entry->sentMarks,
+      };
     }
     if (atLast) {
       replaySnap_.reset();

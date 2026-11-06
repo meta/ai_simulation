@@ -8,6 +8,7 @@
 #include "packsim/link-layer/eth-port.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -23,11 +24,17 @@
 #include "packsim/link-layer/eth-channel.h"
 #include "packsim/link-layer/llr/llr.h"
 #include "packsim/link-layer/oss_tests/lambda-port-observer.h"
+#include "packsim/packet/base.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
 namespace packsim {
 
 namespace {
+
+// A hop limit with bit 7 set, which the `*TtldPkts` counters count as
+// TTL-marked.
+constexpr uint8_t kTtlMarkedHopLimit = 0x80;
+
 // Helper whose constructor sets `pdes_threads=4` during member-init,
 // before any test-fixture field that constructs a `Scheduler`. Pinned
 // rather than left to the default, so the test runs on 4 threads whatever
@@ -2016,6 +2023,89 @@ TEST_F(LlrSharedPacketAliasTest, TimerReplayAliasDoesNotHideFrameDownstream) {
   EXPECT_EQ(fillerDeliveredAtC, 1) << describeChain();
   EXPECT_EQ(pDeliveredAtC, 1) << describeChain();
   EXPECT_EQ(c_->llr()->stats().rxDuplicateSeq, 0u) << describeChain();
+}
+
+// ============================================================================
+// Transmit counters on LLR replay
+//
+// A replay resends the frame held in the replay buffer, so the replaying port
+// counts it with the ECN and TTL marks the frame carried on its first
+// transmission. The next hop marks the same packet object after that, and the
+// replaying port's counters must not include those marks.
+// ============================================================================
+
+class LlrReplayTxStatsTest : public LlrSharedPacketAliasTest {
+ protected:
+  // A sends `p` once. When bIn accepts P, B applies `markAtB` to the shared
+  // packet, as B's switch pipeline and egress queue would, and forwards it to
+  // C. No port sends an ACK, so A's replay timer resends P every 10 us.
+  void sendAndReplayAtA(
+      const PacketPtr& p,
+      std::function<void(Ipv6Packet&)> markAtB) {
+    buildChain(/*abDelayNs=*/5'000, /*bcDelayNs=*/0);
+    observerBIn_.setOnPacketRcvdCallback(
+        [this, markAtB = std::move(markAtB)](
+            EthernetPort&, const PacketPtr& pkt) {
+          markAtB(*pkt.as<Ipv6Packet>());
+          bOut_->send(pkt);
+        });
+    a_->send(p);
+    scheduler_.run(Time::fromUs(kRunUs));
+  }
+
+  // How many times A put P on the wire: its first transmission plus replays.
+  // `txReplay` counts at pull and `txPkts` at completion; they agree because
+  // `kRunUs` ends between two of A's replay rounds, with none on the wire.
+  uint64_t countATransmits() const {
+    return 1 + a_->llr()->stats().txReplay;
+  }
+};
+
+// B marks P CE after A's first transmission. A's replays resend the unmarked
+// frame, so A counts no CE frame, while still counting every replay in its
+// packet and byte totals.
+TEST_F(LlrReplayTxStatsTest, TimerReplayIgnoresCeMarkAddedDownstream) {
+  const auto p = createPacket<PacketType::IPV6>(kPayloadBytes);
+  p.as<Ipv6Packet>()->ecn = Ipv6Packet::EcnType::ECN_ECT0;
+  sendAndReplayAtA(
+      p, [](Ipv6Packet& ip) { ip.ecn = Ipv6Packet::EcnType::ECN_CE; });
+
+  ASSERT_GE(a_->llr()->stats().txReplayViaTimer, 1u) << describeChain();
+  const auto aStats = a_->getPortStats(a_->getPktCos(p));
+  EXPECT_EQ(aStats.txEcnCePkts, 0u) << describeChain();
+  EXPECT_EQ(aStats.txPkts, countATransmits()) << describeChain();
+  EXPECT_EQ(aStats.txBytes, countATransmits() * p->getSize())
+      << describeChain();
+  // bOut sent P after B marked it.
+  EXPECT_EQ(bOut_->getPortStats(bOut_->getPktCos(p)).txEcnCePkts, 1u)
+      << describeChain();
+}
+
+// P is already CE when A first sends it, so every replay carries CE on the
+// wire and counts as a CE frame.
+TEST_F(LlrReplayTxStatsTest, TimerReplayCountsCeMarkFromFirstTransmission) {
+  const auto p = createPacket<PacketType::IPV6>(kPayloadBytes);
+  p.as<Ipv6Packet>()->ecn = Ipv6Packet::EcnType::ECN_CE;
+  sendAndReplayAtA(p, [](Ipv6Packet&) {});
+
+  ASSERT_GE(a_->llr()->stats().txReplayViaTimer, 1u) << describeChain();
+  EXPECT_EQ(a_->getPortStats(a_->getPktCos(p)).txEcnCePkts, countATransmits())
+      << describeChain();
+}
+
+// P leaves A with the TTL-marked bit set (hop limit 0x80), and B's decrement
+// clears it (0x7F). A's replays resend the marked frame, so each one counts.
+TEST_F(LlrReplayTxStatsTest, TimerReplayCountsTtlMarkFromFirstTransmission) {
+  const auto p = createPacket<PacketType::IPV6>(kPayloadBytes);
+  p.as<Ipv6Packet>()->hopLimit = kTtlMarkedHopLimit;
+  sendAndReplayAtA(p, [](Ipv6Packet& ip) { --ip.hopLimit; });
+
+  ASSERT_GE(a_->llr()->stats().txReplayViaTimer, 1u) << describeChain();
+  EXPECT_EQ(a_->getPortStats(a_->getPktCos(p)).txTtldPkts, countATransmits())
+      << describeChain();
+  // bOut sent P after B's decrement cleared the bit.
+  EXPECT_EQ(bOut_->getPortStats(bOut_->getPktCos(p)).txTtldPkts, 0u)
+      << describeChain();
 }
 
 } // namespace packsim

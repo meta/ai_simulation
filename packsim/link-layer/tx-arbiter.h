@@ -12,6 +12,7 @@
 #include <optional>
 
 #include "packsim/link-layer/ctlos-arbiter.h"
+#include "packsim/link-layer/llr/llr-tx-buffer.h"
 #include "packsim/packet/ethernet-frame.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 
@@ -79,6 +80,11 @@ class TxArbiter {
     // `kind` is `LLR_NEW` or `LLR_REPLAY`, or for a sequenced CC_Update.
     EthernetFrame frame;
     TxKind kind{};
+    // `LLR_REPLAY` only: the marks of the frame's first transmission, which
+    // its transmit counters count; nullopt for a replayed frame that is not
+    // IPv6, such as a sequenced CC_Update. Every other kind reads the packet
+    // when it completes, before any later hop can have rewritten it.
+    std::optional<llr::LlrTxBuffer::SentMarks> firstSentMarks;
   };
 
   /**
@@ -165,13 +171,12 @@ class TxArbiter {
   /**
    * Shared post-transmit accounting for data frames. Bumps per-CoS transmit
    * counters unconditionally, and fires the upstream transmit notification
-   * only for the first transmit of a frame that came from upstream.
+   * only for the first transmit of a frame that came from upstream. An LLR
+   * replay already notified upstream on its first transmit.
    *
-   * @param pkt       The transmitted frame.
-   * @param isReplay  True for an LLR retransmit, which already notified
-   *                  upstream on its first transmit.
+   * @param frame  The transmitted frame.
    */
-  void onWireDataFrameComplete(const PacketPtr& pkt, bool isReplay);
+  void onWireDataFrameComplete(const OutboundFrame& frame);
 
   // The owning port, whose queues and protocol modules are read on every pull.
   EthernetPort& port_;

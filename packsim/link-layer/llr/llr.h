@@ -34,6 +34,18 @@
 namespace packsim::llr {
 
 /**
+ * One frame returned by `Llr::pullNextReplayFrame()`.
+ */
+struct ReplayFrame {
+  // The frame to resend, with the sequence number it was buffered under.
+  EthernetFrame frame;
+  // The marks of its first transmission; nullopt for a frame that is not
+  // IPv6. Hops downstream may have rewritten the shared packet since, so the
+  // replay's transmit counters count these.
+  std::optional<LlrTxBuffer::SentMarks> firstSentMarks;
+};
+
+/**
  * Link Level Retry (LLR) module per UEC 1.0.3 §5.1.
  *
  * The hot path (per-packet `rxFrame`, `rxCtlos`) is synchronous. The TX
@@ -69,10 +81,12 @@ namespace packsim::llr {
  *
  * Outbound data frames flow via the scheduler-driven pull API:
  * `pullNextNewFrame()` for ADVANCE-state admission and
- * `pullNextReplayFrame()` for REPLAY-state retransmits. Both return an
- * `EthernetFrame` carrying the sequence number of this transmission and bump
- * stats internally, so the wire driver (`TxArbiter::nextOutboundFrame`) only
- * has to forward the frame to the wire and call back via
+ * `pullNextReplayFrame()` for REPLAY-state retransmits. Both return the
+ * `EthernetFrame` carrying the sequence number of this transmission, the
+ * replay one inside a `ReplayFrame` beside the marks the frame was first sent
+ * with, and bump stats internally, so the wire driver
+ * (`TxArbiter::nextOutboundFrame`) only has to forward the frame to the wire
+ * and call back via
  * `notifyNewFrameTransmitted` / `notifyReplayFrameTransmitted` at TX-complete
  * time. The sequence number never goes on the shared `Packet`: every hop on
  * the packet's path holds the same object, and a replay resends it while the
@@ -478,8 +492,8 @@ class Llr : public ICtlosSource {
   // The wire driver (`LinkLayerScheduler` +
   // `TxArbiter::nextOutboundFrame`) calls two pull helpers
   // (`pullNextReplayFrame` in REPLAY, `pullNextNewFrame` in every other TX
-  // state). Both bump stats internally so `TxArbiter` only forwards the
-  // returned frame.
+  // state). Both bump stats internally so `TxArbiter` only forwards what
+  // they return.
   //
   // The owning port installs a wake callback through
   // `setOnSchedulerWakeCallback` so `Llr` can pulse the scheduler on state
@@ -623,10 +637,11 @@ class Llr : public ICtlosSource {
    * Called once per frame by the wire driver while the TX SM is in
    * REPLAY.
    *
-   * @return  The frame with the sequence number it was buffered under, or
-   *          `nullopt` once the snapshot is exhausted.
+   * @return  The frame with the sequence number it was buffered under and
+   *          the marks of its first transmission, or `nullopt` once the
+   *          snapshot is exhausted.
    */
-  [[nodiscard]] std::optional<EthernetFrame> pullNextReplayFrame();
+  [[nodiscard]] std::optional<ReplayFrame> pullNextReplayFrame();
 
   /**
    * Build the `LlrCtlosFrame` that carries the pending report `f` onto the

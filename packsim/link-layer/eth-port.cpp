@@ -932,14 +932,15 @@ void EthernetPort::bumpRxStats(const PacketPtr& pkt) {
   stats.rxBytes += pkt->getSize();
 }
 
-void EthernetPort::bumpTxStats(const PacketPtr& pkt) {
+void EthernetPort::bumpTxStats(
+    const PacketPtr& pkt,
+    const std::optional<llr::LlrTxBuffer::SentMarks>& marks) {
   PortStats& stats = getStatsFor(pkt);
-  if (pkt.is<Ipv6Packet>()) {
-    const auto* ip = pkt.as<Ipv6Packet>();
-    if (ip->ecn == Ipv6Packet::EcnType::ECN_CE) {
+  if (marks.has_value()) {
+    if (marks->ecn == Ipv6Packet::EcnType::ECN_CE) {
       ++stats.txEcnCePkts;
     }
-    if (ip->hopLimit & kHopLimitTtldBit) {
+    if (marks->hopLimit & kHopLimitTtldBit) {
       ++stats.txTtldPkts;
     }
   }

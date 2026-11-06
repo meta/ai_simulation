@@ -89,5 +89,9 @@ on `main` has the detail.
   the next hop has already accepted. Each transmission now carries its own
   sequence number instead of every hop sharing one on the packet, so runs that
   replay accepted frames no longer depend on the number of simulation threads.
+- A link-layer retry replay counts the ECN congestion-experienced and TTL marks
+  the frame carried when it was first sent, instead of the packet's current
+  marks: a CE mark added downstream, or a TTL mark a downstream hop-limit
+  decrement cleared.
 
 [Unreleased]: https://github.com/facebook/ai_simulation/commits/main

@@ -18,6 +18,10 @@
 namespace packsim::llr {
 namespace {
 
+// A hop limit with bit 7 set, which the `*TtldPkts` counters count as
+// TTL-marked.
+constexpr uint8_t kTtlMarkedHopLimit = 0x80;
+
 // Simple packet factory: creates an Ipv6Packet of `size` bytes total.
 PacketPtr makePacket(uint32_t size) {
   return createPacket<PacketType::IPV6>(/*payloadSize=*/size);
@@ -208,6 +212,28 @@ TEST(LlrTxBufferTest, FailedTryAddDoesNotAdvancePeak) {
   // Peaks unchanged.
   EXPECT_EQ(buf.peakSeq(), 1u);
   EXPECT_EQ(buf.peakBytes(), pktSize);
+}
+
+// The buffer keeps the marks a frame had when it was added. Later hops share
+// the packet object, so a CE mark or hop-limit decrement they make must not
+// change what a replay of the held frame is counted as.
+TEST(LlrTxBufferTest, LookupReturnsTheMarksFromWhenTheFrameWasAdded) {
+  LlrTxBuffer buf{8192};
+  const auto pkt = makePacket(100);
+  auto* ip = pkt.as<Ipv6Packet>();
+  ip->ecn = Ipv6Packet::EcnType::ECN_ECT0;
+  ip->hopLimit = kTtlMarkedHopLimit;
+  ASSERT_TRUE(buf.tryAdd(0u, pkt));
+
+  ip->ecn = Ipv6Packet::EcnType::ECN_CE;
+  --ip->hopLimit;
+
+  const LlrTxBuffer::Entry* entry = buf.lookup(0u);
+  ASSERT_NE(entry, nullptr);
+  EXPECT_EQ(entry->packet.get(), pkt.get());
+  ASSERT_TRUE(entry->sentMarks.has_value());
+  EXPECT_EQ(entry->sentMarks->ecn, Ipv6Packet::EcnType::ECN_ECT0);
+  EXPECT_EQ(entry->sentMarks->hopLimit, kTtlMarkedHopLimit);
 }
 
 } // namespace

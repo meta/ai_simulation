@@ -96,7 +96,7 @@ inline std::size_t pullAllReplayFrames(
     std::vector<PacketPtr>& sentData) {
   std::size_t count = 0;
   while (auto frame = llr.pullNextReplayFrame()) {
-    sentData.emplace_back(std::move(frame->pkt));
+    sentData.emplace_back(std::move(frame->frame.pkt));
     llr.notifyReplayFrameTransmitted();
     ++count;
   }

@@ -28,6 +28,7 @@
 #include "packsim/kernel/ticker.h"
 #include "packsim/kernel/time.h"
 #include "packsim/link-layer/eth-channel.h"
+#include "packsim/link-layer/llr/llr-tx-buffer.h"
 #include "packsim/link-layer/pfc-controller.h"
 #include "packsim/link-layer/port-observer.h"
 #include "packsim/link-layer/port-stats.h"
@@ -792,8 +793,15 @@ class EthernetPort : public TxPacketSource {
   // Count a received frame against its CoS, with its ECN and TTL markings.
   void bumpRxStats(const PacketPtr& pkt);
 
-  // Count a transmitted frame against its CoS, with its ECN and TTL markings.
-  void bumpTxStats(const PacketPtr& pkt);
+  /**
+   * Count a transmitted frame against its CoS, with its ECN and TTL markings.
+   *
+   * @param pkt    The transmitted frame.
+   * @param marks  The marks it was sent with, nullopt when it is not IPv6.
+   */
+  void bumpTxStats(
+      const PacketPtr& pkt,
+      const std::optional<llr::LlrTxBuffer::SentMarks>& marks);
 
   /**
    * Hand a received frame up to the MAC client. Unlike the drop
