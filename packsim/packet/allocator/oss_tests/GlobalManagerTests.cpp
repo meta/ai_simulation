@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <array>
 #include <string>
 #include <typeinfo>
 
@@ -53,6 +54,41 @@ TEST(GlobalManagerTests, FilesPacketByDynamicTypeNotPktTypeField) {
 
   packsim::GlobalManager::returnPacket(roce);
   packsim::GlobalManager::returnPacket(udpAgain);
+}
+
+// Counts its destructions, so a test can tell a packet the pool deleted from
+// one it kept.
+struct CountedPacket : Packet {
+  ~CountedPacket() override {
+    ++destroyedCount;
+  }
+  static inline int destroyedCount = 0;
+};
+
+// A thread that frees more packets than it takes -- a switch thread dropping
+// the last reference an LLR replay buffer held -- must not keep them all.
+TEST(PacketAllocatorTests, DeletesPacketsReturnedPastTheCap) {
+  // Arrange
+  CountedPacket::destroyedCount = 0;
+  detail::PacketAllocator allocator{/*maxSparePerType=*/2};
+  const std::array<CountedPacket*, 3> packets{
+      new CountedPacket(), new CountedPacket(), new CountedPacket()};
+
+  // Act
+  for (auto* packet : packets) {
+    allocator.push(packet);
+  }
+
+  // Assert: the third was deleted, and the two kept come back newest first.
+  EXPECT_EQ(CountedPacket::destroyedCount, 1);
+  auto* const newest = allocator.pop<CountedPacket>();
+  auto* const oldest = allocator.pop<CountedPacket>();
+  EXPECT_EQ(newest, packets[1]);
+  EXPECT_EQ(oldest, packets[0]);
+  // Delete what came back: if the cap failed, the pool still holds a packet,
+  // which its destructor deletes.
+  delete newest;
+  delete oldest;
 }
 
 } // namespace packsim

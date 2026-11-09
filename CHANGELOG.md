@@ -71,6 +71,10 @@ on `main` has the detail.
   empty instead of becoming one hour. A disabled timer is never started, so a
   run with link-layer retry no longer keeps an event queued for each
   acknowledgement, and needs much less memory.
+- Each thread keeps at most 4,096 spare packets of each type and frees any
+  more it is given back, so packets freed on switch threads return to the
+  heap. Runs with link-layer retry need much less memory at higher thread
+  counts; results do not change.
 
 ### Fixed
 
