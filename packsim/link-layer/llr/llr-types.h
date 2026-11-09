@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "packsim/kernel/time.h"
 #include "packsim/link-layer/llr/llr-seq.h"
@@ -247,17 +248,6 @@ inline constexpr uint32_t kCtlosTargetSpacingMinBytes = 400;
 // `ackByteThreshold` above this with `std::invalid_argument`.
 inline constexpr uint32_t kCtlosTargetSpacingMaxBytes = 16384;
 
-// Sentinel duration treated as "timer effectively disabled" for the
-// `dataAgeTimerMax` / `pcsLostStatusTimerMax` fields.
-// `LlrConfigTranslator::translate` maps the thrift sentinel `0` to it.
-//
-// Sized to be safely beyond any realistic packsim runtime (tens of
-// seconds of simulated time for high-fidelity sweeps) while staying
-// well under the int64_t headroom the scheduler uses for relative
-// delays: `Time` stores femtoseconds, so the ~9.2 × 10^18 fs int64_t
-// ceiling corresponds to ~2.5 h — 1 h leaves a comfortable margin.
-inline const Time kEffectivelyDisabledLlrTimer = Time::fromSec(60 * 60);
-
 // Default `LlrConfig::linkBps`. `LlrConfigTranslator::translate` overwrites it
 // with the port's configured rate; the default only gives a directly built
 // `LlrConfig` and unit tests a fallback. 800 Gbps is the fastest Ethernet port
@@ -292,11 +282,13 @@ struct LlrConfig {
 
   // `pcs_lost_status_timer_max` (Tbl 5-9). Spec range 0..4.29s with ≤100ns
   // res. Zero causes immediate expiration. Support for non-zero is OPTIONAL
-  // per spec; implementation supports it.
-  Time pcsLostStatusTimerMax;
+  // per spec; implementation supports it. Empty disables the timer: it is
+  // never started, so it never expires.
+  std::optional<Time> pcsLostStatusTimerMax;
 
   // `data_age_timer_max` (Tbl 5-9). Spec range 0..4.29s with ≤100ns res.
-  Time dataAgeTimerMax;
+  // Empty disables the timer, as for `pcsLostStatusTimerMax`.
+  std::optional<Time> dataAgeTimerMax;
 
   // `llr_init_behavior` (Tbl 5-9). Behavior of TX LLR for LLR-desired
   // frames while TX SM is in INIT.

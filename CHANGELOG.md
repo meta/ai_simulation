@@ -65,6 +65,12 @@ on `main` has the detail.
   unchanged.
 - `GoBackNRecovery::rnrFieldToTime()` is now `rnrFieldToDuration()` and
   returns a `Duration`: the RNR back-off is a span of time, not a point.
+- `LlrConfig::dataAgeTimerMax` and `LlrConfig::pcsLostStatusTimerMax` in
+  `packsim/link-layer/llr/llr-types.h` are now `std::optional<Time>`, empty
+  meaning the timer is disabled, and a timer set to 0 in the config is left
+  empty instead of becoming one hour. A disabled timer is never started, so a
+  run with link-layer retry no longer keeps an event queued for each
+  acknowledgement, and needs much less memory.
 
 ### Fixed
 

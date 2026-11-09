@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include <folly/portability/GFlags.h>
@@ -184,7 +185,7 @@ TEST_F(LlrConfigTranslationTest, AckByteThresholdAboveSpecMaximumThrows) {
           HasSubstr("exceeds the UEC spec maximum")));
 }
 
-TEST_F(LlrConfigTranslationTest, TimersAtZeroMapToEffectivelyDisabled) {
+TEST_F(LlrConfigTranslationTest, TimersAtZeroAreLeftEmptyToDisableThem) {
   // Arrange: thrift 0 means "disabled", but `Time{}` means "fires now".
   auto config = baseConfig();
   config.dataAgeTimerMaxNs() = 0;
@@ -194,8 +195,8 @@ TEST_F(LlrConfigTranslationTest, TimersAtZeroMapToEffectivelyDisabled) {
   const llr::LlrConfig cfg = translate(config);
 
   // Assert
-  EXPECT_EQ(cfg.dataAgeTimerMax, llr::kEffectivelyDisabledLlrTimer);
-  EXPECT_EQ(cfg.pcsLostStatusTimerMax, llr::kEffectivelyDisabledLlrTimer);
+  EXPECT_EQ(cfg.dataAgeTimerMax, std::nullopt);
+  EXPECT_EQ(cfg.pcsLostStatusTimerMax, std::nullopt);
 }
 
 TEST_F(LlrConfigTranslationTest, PositiveTimersArePassedThroughAsNanoseconds) {

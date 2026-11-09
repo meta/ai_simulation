@@ -75,14 +75,14 @@ LlrConfig LlrConfigTranslator::translate(
   cfg.ctlosTargetSpacingBytes =
       ackByteThreshold != 0 ? ackByteThreshold : kCtlosTargetSpacingMinBytes;
   // Thrift `0` means "disabled" (timer never fires), but `LlrConfig` follows
-  // the spec where `Time{}` = 0 = immediate expiration. Map the sentinel to a
-  // duration well beyond any realistic sim runtime so the timer is effectively
-  // disabled.
-  cfg.dataAgeTimerMax = dataAgeTimerNs > 0 ? Time::fromNs(dataAgeTimerNs)
-                                           : kEffectivelyDisabledLlrTimer;
-  cfg.pcsLostStatusTimerMax = pcsLostStatusNs > 0
-      ? Time::fromNs(pcsLostStatusNs)
-      : kEffectivelyDisabledLlrTimer;
+  // the spec where `Time{}` = 0 = immediate expiration, so a disabled timer
+  // is left empty.
+  if (dataAgeTimerNs > 0) {
+    cfg.dataAgeTimerMax = Time::fromNs(dataAgeTimerNs);
+  }
+  if (pcsLostStatusNs > 0) {
+    cfg.pcsLostStatusTimerMax = Time::fromNs(pcsLostStatusNs);
+  }
   cfg.initBehavior = FrameBehavior::BLOCK;
   cfg.flushBehavior = FrameBehavior::BLOCK;
   cfg.reInitOnDiscard = *config.reInitOnDiscard();

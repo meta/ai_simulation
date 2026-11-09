@@ -209,6 +209,44 @@ TEST_F(LlrTimersTest, DataAgeTimerExpiresFlushes) {
   scheduler().run();
 }
 
+// A disabled data_age_timer (empty `dataAgeTimerMax`, thrift `0`) is never
+// armed, so the ACKs that restart an armed one leave no event in the queue.
+TEST_F(LlrTimersTest, DisabledDataAgeTimerLeavesNoEventPerAck) {
+  auto config = defaultConfig();
+  config.dataAgeTimerMax = std::nullopt;
+  Llr llr(&ctx(), config);
+  test::wireNoopSchedulerWake(llr);
+  bindCtlosCapture(llr);
+  wireSource(llr);
+  bringToAdvance(llr);
+
+  uint32_t nextSeq = 0;
+  const auto sendAndAck = [&] {
+    EXPECT_TRUE(txAndCapture(llr, makePacket(100)));
+    scheduler().run(Time::fromUs(1));
+    llr.rxCtlos(LlrCtlosType::LLR_ACK, /*seq=*/nextSeq, /*initData=*/0);
+    ++nextSeq;
+    scheduler().run(Time::fromUs(1));
+  };
+  // Each count is taken past replayTimerMax (10us), once the replay_timer
+  // events the ACKs cancelled have been discarded.
+  sendAndAck();
+  scheduler().run(Time::fromUs(20));
+  const auto queuedBefore = ctx().eventQ.size();
+
+  constexpr uint32_t kAcks = 100;
+  for (uint32_t i = 0; i < kAcks; ++i) {
+    sendAndAck();
+  }
+  scheduler().run(Time::fromUs(20));
+
+  EXPECT_EQ(ctx().eventQ.size(), queuedBefore);
+  llr.shutdown();
+  // Bounded: draining to empty would simulate up to the latest queued event,
+  // an hour away if a long timer was armed, instead of failing above.
+  scheduler().run(Time::fromUs(20));
+}
+
 // pcs_lost_status_timer: only runs in ADVANCE/REPLAY when PCS_status=FALSE.
 // Triggers FLUSH when expired.
 TEST_F(LlrTimersTest, PcsLostStatusTimerFlushesOnExpiry) {

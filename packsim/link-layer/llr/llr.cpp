@@ -31,10 +31,11 @@ Llr::Llr(folly::not_null<SimContext*> ctx, const LlrConfig& config)
   // `EthernetPort::enableLlr`).
   replayTimer_ =
       std::make_unique<coro::SimStopwatch>(ctx_, config_.replayTimerMax);
-  dataAgeTimer_ =
-      std::make_unique<coro::SimStopwatch>(ctx_, config_.dataAgeTimerMax);
-  pcsLostStatusTimer_ =
-      std::make_unique<coro::SimStopwatch>(ctx_, config_.pcsLostStatusTimerMax);
+  // A disabled timer is never started, so its duration is never read.
+  dataAgeTimer_ = std::make_unique<coro::SimStopwatch>(
+      ctx_, config_.dataAgeTimerMax.value_or(Time{}));
+  pcsLostStatusTimer_ = std::make_unique<coro::SimStopwatch>(
+      ctx_, config_.pcsLostStatusTimerMax.value_or(Time{}));
   // Periodic CtlOS emission timers. Periods derive from
   // `ctlosTargetSpacingBytes` at the configured link rate (UEC §5.1.3.1.1
   // for ACK; §5.1.9.1.1 mandates `4 × ctlos_target_spacing` for INIT).
@@ -219,14 +220,16 @@ void Llr::notifyNewFrameTransmitted() {
   // frame is transmitted." Arm each stopwatch if it's STOPPED with
   // outstanding data; skip if EXPIRED (rule-6 / rule-4 hold; rule 3
   // arms on the first replay TX) or RUNNING (already armed — the
-  // "if not already" clause is a no-op).
+  // "if not already" clause is a no-op). A disabled data_age_timer is
+  // never armed.
   if (txBuffer_->outstandingSeq() == 0) {
     return;
   }
   if (!replayTimer_->running() && !replayTimer_->expired()) {
     replayTimer_->start();
   }
-  if (!dataAgeTimer_->running() && !dataAgeTimer_->expired()) {
+  if (config_.dataAgeTimerMax.has_value() && !dataAgeTimer_->running() &&
+      !dataAgeTimer_->expired()) {
     dataAgeTimer_->start();
   }
 }
@@ -653,7 +656,9 @@ void Llr::rxCtlos(
         // outstanding_seq is non-zero, activate; otherwise held at zero")
         // and rule 3 for data_age_timer (same shape).
         restartIfOutstandingFrames(*replayTimer_);
-        restartIfOutstandingFrames(*dataAgeTimer_);
+        if (config_.dataAgeTimerMax.has_value()) {
+          restartIfOutstandingFrames(*dataAgeTimer_);
+        }
         // Buffer just freed seq(s). Wake the scheduler unconditionally
         // (cheap Pulse wake; dropped if no waiter parked) so any
         // previously-blocked admission can retry.
@@ -679,7 +684,9 @@ void Llr::rxCtlos(
         txBuffer_->removeUpTo(seq);
         // Spec §5.1.5 Tbl 5-10 data_age_timer rule 3 applies symmetrically
         // to LLR_NACK whose ack_nack_seq advances acked_seq (UEC §5.1.8).
-        restartIfOutstandingFrames(*dataAgeTimer_);
+        if (config_.dataAgeTimerMax.has_value()) {
+          restartIfOutstandingFrames(*dataAgeTimer_);
+        }
         // Buffer just freed seq(s) on NACK-advance. See parallel
         // comment in the LLR_ACK case.
         onSchedulerWake();
@@ -1148,9 +1155,11 @@ void Llr::updatePcsLostStatusTimer() {
   //   - Rule 1: stopped if TX SM is in LLR_OFF / INIT / FLUSH.
   //   - Rule 2: activated if PCS_status == FALSE (when in an active state).
   // Combined: running iff (txState in {ADVANCE, REPLAY}) AND (!pcsStatus).
+  // A disabled timer never runs.
   const bool inActiveState =
       (txState_ == TxState::ADVANCE || txState_ == TxState::REPLAY);
-  const bool shouldRun = inActiveState && !pcsStatus_;
+  const bool shouldRun =
+      config_.pcsLostStatusTimerMax.has_value() && inActiveState && !pcsStatus_;
   if (shouldRun) {
     if (!pcsLostStatusTimer_->running() && !pcsLostStatusTimer_->expired()) {
       pcsLostStatusTimer_->start();
