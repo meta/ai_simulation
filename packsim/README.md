@@ -220,10 +220,9 @@ python3 build/fbcode_builder/getdeps.py list-deps --src-dir=. packsim
 If you would rather use dependencies you already have installed, this is an
 ordinary CMake project. It requires C++20 and builds out of tree. folly and
 fbthrift change quickly and PackSim follows them closely: getdeps builds it at
-the revisions pinned in `build/deps/github_hashes/`, which move forward daily,
-and an installed folly or fbthrift much older than those may not build it.
-`CMakeLists.txt` is at the **repository root**, not in this directory, so run
-these from there:
+the revisions pinned in `build/deps/github_hashes/`, and an installed folly or
+fbthrift much older than those may not build it. `CMakeLists.txt` is at the
+**repository root**, not in this directory, so run these from there:
 
 ```sh
 cmake -S . -B _build -DCMAKE_BUILD_TYPE=RelWithDebInfo
