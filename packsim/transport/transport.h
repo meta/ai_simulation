@@ -307,6 +307,11 @@ class Transport {
         reachableDstPorts;
     // Whether 0-based egress NIC port `port` currently has its link up.
     std::function<bool(uint16_t port)> isEgressPortLive;
+    // 0-based destination NIC port numbers at `dst` that hang off the switch
+    // local egress port `srcPort` is wired to, so traffic to them never leaves
+    // that switch.
+    std::function<std::set<uint16_t>(uint16_t srcPort, const FlexDeviceId& dst)>
+        firstHopDstPorts;
   };
 
   /**

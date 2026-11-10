@@ -50,6 +50,11 @@ on `main` has the detail.
   largest unit it fills without losing a femtosecond: "1.5us", "300ns", "1fs",
   "0s". The Go-Back-N NACK debug log prints its times this way instead of as
   whole nanoseconds.
+- `PortReachability::dstPortsOnFirstHopSwitch`, in
+  `packsim/node/port-reachability.h`, which lists the destination ports the
+  first-hop switch delivers to itself, without crossing another switch. A
+  transport receives it as `Transport::PortTopology::firstHopDstPorts`, beside
+  `reachableDstPorts`.
 
 ### Changed
 

@@ -470,6 +470,82 @@ packsim::thrift::FlexTopology buildLeafSpine() {
   return topo;
 }
 
+// --- Fat tree: several leaves per rack, one spine -------------------------
+// 2 racks x 2 accels x 2 ports; accel port p wires to its rack's LEAF_rack_p,
+// which keys only the ports wired to it and sends everything else up its
+// default route to the spine. The spine keys every accel port onto the leaf it
+// hangs off, so a same-rack peer on the other leaf is reached only through it.
+packsim::thrift::FlexTopology buildFatTree() {
+  constexpr uint32_t kNumRacks = 2;
+  constexpr uint32_t kAccelPerRack = 2;
+  constexpr uint32_t kNumPorts = 2;
+  packsim::thrift::FlexTopology topo;
+  topo.name() = "fat_tree_test";
+  topo.fullPrefixLength() = kPerPortPrefixLen;
+  auto& nodes = *topo.nodes();
+  auto& links = *topo.links();
+
+  nodes["SPINE"] = makePerPortSwitch("SPINE", {3, 0, 0, 0, 1});
+  packsim::thrift::LinkId linkId = 0;
+  for (uint32_t r = 0; r < kNumRacks; ++r) {
+    for (uint32_t p = 0; p < kNumPorts; ++p) {
+      const std::string leaf = fmt::format("LEAF_{}_{}", r, p);
+      nodes[leaf] = makePerPortSwitch(leaf, {2, 0, r, p, 1});
+      const packsim::thrift::LinkId uplink = linkId++;
+      links[uplink] = makeSwitchLink(uplink, leaf, "SPINE");
+      nodes[leaf].lpmSpec()->defaultRoute()->links()->emplace_back(uplink);
+      for (uint32_t a = 0; a < kAccelPerRack; ++a) {
+        if (p == 0) {
+          packsim::thrift::Node accel;
+          accel.name() = fmt::format("Accel_{}_{}", r, a);
+          accel.id() = std::vector<uint32_t>{1, 0, r, a, 0};
+          accel.type() = packsim::thrift::NodeType::ACCEL;
+          nodes[*accel.name()] = accel;
+        }
+        links[linkId] = makePerPortAccelLink(linkId, r, a, p, leaf);
+        addPortRoute(nodes[leaf], portPrefix(r, a, p), linkId);
+        addPortRoute(nodes["SPINE"], portPrefix(r, a, p), uplink);
+        ++linkId;
+      }
+    }
+  }
+  return topo;
+}
+
+TEST(PortReachabilityTest, FirstHopSwitchHoldsOnlyTheSameLeafPortOfARackPeer) {
+  const auto topo = buildFatTree();
+  const PortReachability reachability(topo, kPortFieldIdx);
+  const auto peer = accelAddrAt(/*rack=*/0, /*idx=*/1);
+  EXPECT_EQ(
+      reachability.dstPortsOnFirstHopSwitch("LEAF_0_0", peer),
+      std::set<uint16_t>{0})
+      << "LEAF_0_0 delivers only the peer's port 0 itself; port 1 hangs off "
+         "LEAF_0_1";
+  EXPECT_EQ(
+      reachability.dstPortsFrom("LEAF_0_0", peer), (std::set<uint16_t>{0, 1}))
+      << "through the spine the same leaf still reaches both peer ports";
+}
+
+TEST(PortReachabilityTest, FirstHopSwitchHoldsNoPortOfACrossRackPeer) {
+  const auto topo = buildFatTree();
+  const PortReachability reachability(topo, kPortFieldIdx);
+  const auto peer = accelAddrAt(/*rack=*/1, /*idx=*/0);
+  EXPECT_TRUE(reachability.dstPortsOnFirstHopSwitch("LEAF_0_0", peer).empty())
+      << "a leaf wires only its own rack, so a cross-rack peer has no port on "
+         "it";
+  EXPECT_EQ(
+      reachability.dstPortsFrom("LEAF_0_0", peer), (std::set<uint16_t>{0, 1}));
+}
+
+TEST(PortReachabilityTest, FirstHopSwitchQueryNeedsASwitch) {
+  const auto topo = buildFatTree();
+  const PortReachability reachability(topo, kPortFieldIdx);
+  const auto peer = accelAddrAt(/*rack=*/0, /*idx=*/1);
+  EXPECT_TRUE(reachability.dstPortsOnFirstHopSwitch("LEAF_does_not_exist", peer)
+                  .empty());
+  EXPECT_TRUE(reachability.dstPortsOnFirstHopSwitch("Accel_0_0", peer).empty());
+}
+
 TEST(PortReachabilityTest, LeafDefaultRouteReachesEveryCrossRackPort) {
   const auto topo = buildLeafSpine();
   // A rack-1 port misses LEAF_0's port entries, climbs its default route to

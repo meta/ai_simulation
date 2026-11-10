@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include <folly/CppAttributes.h>
 #include <folly/container/F14Map.h>
 
 #include "packsim/if/gen-cpp2/config_types.h"
@@ -73,6 +74,28 @@ class PortReachability {
       const std::string& firstHopSwitch,
       const FlexDeviceId& dstAccelAddress) const;
 
+  /**
+   * The destination NIC port numbers (0-based) that firstHopSwitch delivers to
+   * itself: for each port of the destination accel, the route
+   * FlexNode::lpmEntryFor matches at firstHopSwitch is followed one hop, and
+   * the port counts only if a link of that route lands on it. A port the switch
+   * reaches only through another switch is left out.
+   *
+   * @param firstHopSwitch   Node name of the switch directly wired to the
+   *                         source egress port.
+   * @param dstAccelAddress  Address identifying the destination accel; only its
+   *                         accel prefix (the leading portFieldIdx fields) is
+   *                         consulted.
+   *
+   * @return                 Destination port numbers on firstHopSwitch; empty
+   *                         if firstHopSwitch is not a switch node or holds
+   *                         none of the destination's ports, e.g. a fat-tree
+   *                         leaf for a peer in another rack.
+   */
+  [[nodiscard]] std::set<uint16_t> dstPortsOnFirstHopSwitch(
+      const std::string& firstHopSwitch,
+      const FlexDeviceId& dstAccelAddress) const;
+
  private:
   using NodesByName =
       folly::F14FastMap<std::string, const packsim::thrift::Node*>;
@@ -93,6 +116,18 @@ class PortReachability {
   // returned reference is valid for the lifetime of this instance.
   const std::vector<uint16_t>& destAccelPorts(
       const FlexDeviceId& dstAccelAddress) const;
+
+  // The switch node named firstHopSwitch, or nullptr if no switch has that
+  // name.
+  const packsim::thrift::Node* FOLLY_NULLABLE
+  findSwitch(const std::string& firstHopSwitch) const;
+
+  // Add to reached every port of dstPortId's accel that one of hops' links
+  // lands on.
+  void addDstAccelPortsOf(
+      const RouteHops& hops,
+      const FlexDeviceId& dstPortId,
+      std::set<uint16_t>& reached) const;
 
   // Breadth-first walk from firstHopSwitch toward dstPortId, adding every port
   // of dstPortId's accel that the walk lands on to reached.

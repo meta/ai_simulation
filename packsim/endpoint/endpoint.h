@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -330,6 +331,38 @@ class Endpoint : public FlexNode, public IPortObserver {
   std::set<uint16_t> computeReachableDstPorts(
       const FlexDeviceId& srcPort,
       const FlexDeviceId& dst) const;
+
+  /**
+   * The destination NIC port numbers (0-based) at dst that hang off the switch
+   * a local egress port is wired to, so a packet to them never leaves that
+   * switch. Backs a multi-port transport's choice to keep a destination's
+   * traffic on that switch.
+   *
+   * @param srcPort  A local egress port whose first-hop switch is consulted.
+   * @param dst      The destination; any port field is ignored.
+   *
+   * @return         The destination port numbers on that switch; empty if
+   *                 srcPort is not a wired local port or the switch holds none.
+   *
+   * @throw  std::runtime_error if the port index or reachability tracer is
+   *         unset.
+   */
+  std::set<uint16_t> computeFirstHopDstPorts(
+      const FlexDeviceId& srcPort,
+      const FlexDeviceId& dst) const;
+
+  // Shared by the two queries above: resolve srcPort's first-hop switch and
+  // dst's accel address, then run query on them.
+  using PortReachabilityQuery = std::set<uint16_t> (PortReachability::*)(
+      const std::string& firstHopSwitch,
+      const FlexDeviceId& dstAccelAddress) const;
+  std::set<uint16_t> queryFromFirstHopSwitch(
+      const FlexDeviceId& srcPort,
+      const FlexDeviceId& dst,
+      PortReachabilityQuery query) const;
+
+  // This endpoint's address for its 0-based egress port number.
+  FlexDeviceId egressPortId(uint8_t portFieldIdx, uint16_t egressPort) const;
 };
 
 } // namespace packsim

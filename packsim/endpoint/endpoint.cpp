@@ -132,7 +132,7 @@ void Endpoint::addPort(
     const uint16_t egressPort = getEgressNicPort(*ethPort);
     transport_->addAvailableNicPort(egressPort);
     if (egressPort == 0) {
-      // Registered once: both callbacks are transport-wide and resolve any
+      // Registered once: the callbacks are transport-wide and resolve any
       // egress port number.
       transport_->setPortTopology(
           Transport::PortTopology{
@@ -140,15 +140,18 @@ void Endpoint::addPort(
                   [this, portIdx](
                       uint16_t srcPort, // 0-based
                       const FlexDeviceId& dst) -> std::set<uint16_t> {
-                // FlexDeviceId port values are 1-based.
-                FlexDeviceId srcPortId = getFlexId();
-                uint16_t& portField = srcPortId.values[portIdx];
-                portField = srcPort;
-                ++portField;
-                return computeReachableDstPorts(srcPortId, dst);
+                return computeReachableDstPorts(
+                    egressPortId(portIdx, srcPort), dst);
               },
               .isEgressPortLive = [this](uint16_t port) -> bool {
                 return isEgressPortLive(port); // 0-based
+              },
+              .firstHopDstPorts =
+                  [this, portIdx](
+                      uint16_t srcPort, // 0-based
+                      const FlexDeviceId& dst) -> std::set<uint16_t> {
+                return computeFirstHopDstPorts(
+                    egressPortId(portIdx, srcPort), dst);
               }});
     }
     transport_->addPort(
@@ -188,9 +191,34 @@ void Endpoint::addPort(
       [this](uint8_t cos) { transport_->sendPendingData(cos); });
 }
 
+FlexDeviceId Endpoint::egressPortId(
+    const uint8_t portFieldIdx,
+    const uint16_t egressPort) const {
+  // FlexDeviceId port values are 1-based.
+  FlexDeviceId portId = getFlexId();
+  uint16_t& portField = portId.values[portFieldIdx];
+  portField = egressPort;
+  ++portField;
+  return portId;
+}
+
 std::set<uint16_t> Endpoint::computeReachableDstPorts(
     const FlexDeviceId& srcPort,
     const FlexDeviceId& dst) const {
+  return queryFromFirstHopSwitch(srcPort, dst, &PortReachability::dstPortsFrom);
+}
+
+std::set<uint16_t> Endpoint::computeFirstHopDstPorts(
+    const FlexDeviceId& srcPort,
+    const FlexDeviceId& dst) const {
+  return queryFromFirstHopSwitch(
+      srcPort, dst, &PortReachability::dstPortsOnFirstHopSwitch);
+}
+
+std::set<uint16_t> Endpoint::queryFromFirstHopSwitch(
+    const FlexDeviceId& srcPort,
+    const FlexDeviceId& dst,
+    const PortReachabilityQuery query) const {
   if (!portIndex_.has_value()) {
     throw std::runtime_error(
         fmt::format(
@@ -201,7 +229,7 @@ std::set<uint16_t> Endpoint::computeReachableDstPorts(
   const uint8_t portIndex = portIndex_.value();
   if (portReachability_ == nullptr) {
     throw std::runtime_error(
-        "computeReachableDstPorts requires the topology's reachability tracer");
+        "Endpoint port reachability requires the topology's reachability tracer");
   }
 
   // srcPort is one of this endpoint's egress ports; its first-hop switch is the
@@ -225,7 +253,7 @@ std::set<uint16_t> Endpoint::computeReachableDstPorts(
   // accel (this is the single place every caller's dst is normalized).
   FlexDeviceId dstAccel = dst;
   dstAccel.values.at(portIndex) = 0;
-  return portReachability_->dstPortsFrom(firstHopSwitch, dstAccel);
+  return (portReachability_->*query)(firstHopSwitch, dstAccel);
 }
 
 bool Endpoint::canPortsReach(

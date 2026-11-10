@@ -188,6 +188,32 @@ const std::vector<uint16_t>& PortReachability::destAccelPorts(
   return it == accelPortsByPrefix_.end() ? kEmpty : it->second;
 }
 
+const packsim::thrift::Node* FOLLY_NULLABLE
+PortReachability::findSwitch(const std::string& firstHopSwitch) const {
+  const auto it = nodesByName_.find(firstHopSwitch);
+  if (it == nodesByName_.end() ||
+      *it->second->type() != packsim::thrift::NodeType::SWITCH) {
+    return nullptr;
+  }
+  return it->second;
+}
+
+void PortReachability::addDstAccelPortsOf(
+    const RouteHops& hops,
+    const FlexDeviceId& dstPortId,
+    std::set<uint16_t>& reached) const {
+  // dstPortId shares every field before the port field with its accel, so it
+  // identifies the destination accel's own links.
+  for (const auto* accelAddr : hops.accelAddresses) {
+    if (!accelSideIsDst(*accelAddr, dstPortId, portFieldIdx_)) {
+      continue;
+    }
+    if (const auto port = portOf(*accelAddr, portFieldIdx_)) {
+      reached.emplace(*port);
+    }
+  }
+}
+
 void PortReachability::collectReachedPorts(
     const packsim::thrift::Node& firstHopSwitch,
     const FlexDeviceId& dstPortId,
@@ -208,16 +234,7 @@ void PortReachability::collectReachedPorts(
         frontier.emplace_back(next);
       }
     }
-    // dstPortId shares every field before the port field with its accel, so it
-    // identifies the destination accel's own links.
-    for (const auto* accelAddr : hops.accelAddresses) {
-      if (!accelSideIsDst(*accelAddr, dstPortId, portFieldIdx_)) {
-        continue;
-      }
-      if (const auto port = portOf(*accelAddr, portFieldIdx_)) {
-        reached.emplace(*port);
-      }
-    }
+    addDstAccelPortsOf(hops, dstPortId, reached);
   }
 }
 
@@ -226,9 +243,8 @@ std::set<uint16_t> PortReachability::dstPortsFrom(
     const FlexDeviceId& dstAccelAddress) const {
   std::set<uint16_t> dstPorts;
   // Documented contract: empty unless firstHopSwitch names a switch node.
-  const auto it = nodesByName_.find(firstHopSwitch);
-  if (it == nodesByName_.end() ||
-      *it->second->type() != packsim::thrift::NodeType::SWITCH) {
+  const auto* const switchNode = findSwitch(firstHopSwitch);
+  if (switchNode == nullptr) {
     return dstPorts;
   }
 
@@ -238,8 +254,30 @@ std::set<uint16_t> PortReachability::dstPortsFrom(
   // port reaches several.
   for (const uint16_t port : destAccelPorts(dstAccelAddress)) {
     collectReachedPorts(
-        *it->second,
+        *switchNode,
         dstPortAddress(dstAccelAddress, portFieldIdx_, port),
+        dstPorts);
+  }
+  return dstPorts;
+}
+
+std::set<uint16_t> PortReachability::dstPortsOnFirstHopSwitch(
+    const std::string& firstHopSwitch,
+    const FlexDeviceId& dstAccelAddress) const {
+  std::set<uint16_t> dstPorts;
+  const auto* const switchNode = findSwitch(firstHopSwitch);
+  if (switchNode == nullptr) {
+    return dstPorts;
+  }
+  // One hop only: the route this switch matches for each destination port,
+  // keyed as FlexNode::routePacket keys a real packet to that port.
+  for (const uint16_t port : destAccelPorts(dstAccelAddress)) {
+    const FlexDeviceId dstPortId =
+        dstPortAddress(dstAccelAddress, portFieldIdx_, port);
+    addDstAccelPortsOf(
+        hopsByRoute_.at(
+            &FlexNode::lpmEntryFor(*switchNode->lpmSpec(), dstPortId)),
+        dstPortId,
         dstPorts);
   }
   return dstPorts;
