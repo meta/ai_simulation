@@ -115,6 +115,52 @@ TEST(PtrTests, TestPtrTakeMultiple) {
   ASSERT_EQ(ptr->pktType, packsim::PacketType::UDP);
 }
 
+TEST(PtrTests, TestCopyAddsHolderAndDestructionRemovesIt) {
+  auto ptr = packsim::createPacket<packsim::PacketType::UDP>();
+
+  {
+    const auto ptrCopy = ptr;
+    EXPECT_EQ(ptr->refs.holders(), 2);
+  }
+
+  EXPECT_EQ(ptr->refs.holders(), 1);
+}
+
+TEST(PtrTests, TestSelfCopyAssignmentKeepsPacket) {
+  auto ptr = packsim::createPacket<packsim::PacketType::UDP>(
+      /* payloadSize= */ 1000);
+  const auto& sameHandle = ptr;
+
+  ptr = sameHandle;
+
+  EXPECT_EQ(ptr->refs.holders(), 1);
+  EXPECT_EQ(ptr->payloadSize, 1000);
+}
+
+TEST(PtrTests, TestCopyingPacketFieldsLeavesHoldersAlone) {
+  auto source = packsim::createPacket<packsim::PacketType::UDP>(
+      /* payloadSize= */ 1000);
+  const auto sourceCopy = source;
+  auto destination = packsim::createPacket<packsim::PacketType::UDP>();
+
+  *destination = *source;
+
+  EXPECT_EQ(destination->payloadSize, 1000);
+  EXPECT_EQ(destination->refs.holders(), 1);
+  EXPECT_EQ(source->refs.holders(), 2);
+}
+
+TEST(PtrTests, TestLastReleaseReturnsPacketToPool) {
+  auto ptr = packsim::createPacket<packsim::PacketType::UDP>();
+  const Packet* const address = ptr.get();
+
+  ptr = nullptr;
+  const auto reused = packsim::createPacket<packsim::PacketType::UDP>();
+
+  EXPECT_EQ(reused.get(), address);
+  EXPECT_EQ(reused->refs.holders(), 1);
+}
+
 TEST(PtrTests, TestReferenceOperator) {
   auto ptr = packsim::createPacket<packsim::PacketType::UDP>(
       /* payloadSize= */ 1000);

@@ -7,11 +7,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <memory>
-#include <typeindex>
+#include <limits>
 #include <utility>
 #include <version>
 
@@ -25,99 +25,50 @@
 
 namespace packsim {
 
-namespace detail {
-/**
- * A non-movable non-copyable wrapper around the packet objects to take them
- * from global pool at request and release them when shared pointer dies.
- */
-class PacketWrapper {
- private:
-  /**
-   * Do NOT use this constructor directly, since the pointer needs to come from
-   * the global pool. Call the static method below instead.
-   */
-  explicit PacketWrapper(Packet* const packetPtr) : packetPtr_(packetPtr) {
-#ifdef LOG_POOL_ALLOCATIONS
-    XLOGF(
-        INFO,
-        "==> Took address {} from global pool.",
-        static_cast<void*>(packetPtr_));
-#endif
-  }
+class PacketPtr;
 
-  PacketWrapper(const PacketWrapper& other) = delete;
-  PacketWrapper(PacketWrapper&& other) = delete;
-  PacketWrapper& operator=(const PacketWrapper& other) = delete;
-  PacketWrapper& operator=(PacketWrapper&& other) = delete;
-
- public:
-  /**
-   * Use this function to create a new wrapper with allocation from global pool.
-   */
-  template <PacketType packetType>
-  static std::shared_ptr<PacketWrapper> make() {
-    struct SharedPtrFriendlyWrapper : public PacketWrapper {
-     public:
-      explicit SharedPtrFriendlyWrapper(Packet* const packetPtr)
-          : PacketWrapper(packetPtr) {}
-    };
-
-    return std::make_shared<SharedPtrFriendlyWrapper>(
-        GlobalManager::takePacket<packetType>());
-  }
-
-  ~PacketWrapper() {
-    GlobalManager::returnPacket(packetPtr_);
-#ifdef LOG_POOL_ALLOCATIONS
-    XLOGF(
-        INFO,
-        "<== Returned address {} to global pool.",
-        static_cast<void*>(packetPtr_));
-#endif
-  }
-
-  Packet* get() const {
-    return packetPtr_;
-  }
-
- private:
-  Packet* const packetPtr_;
-};
-} // namespace detail
+template <PacketType packetType>
+PacketPtr createPacket(uint32_t payloadSize = 0);
 
 /**
  * A shared, reference-counted handle to a packet taken from the global packet
- * pool. The packet goes back to the pool when the last handle to it is
- * destroyed.
+ * pool. The count lives in the packet (`Packet::refs`), so a handle is one
+ * pointer and creating a packet allocates nothing. The packet goes back to the
+ * pool of the thread that drops the last handle.
  */
 class PacketPtr {
  public:
-  PacketPtr() noexcept : wPtr_(nullptr) {}
+  PacketPtr() noexcept = default;
 
-  /* implicit */ PacketPtr(std::nullptr_t) noexcept : wPtr_(nullptr) {}
+  /* implicit */ PacketPtr(std::nullptr_t) noexcept {}
 
-  explicit PacketPtr(std::shared_ptr<detail::PacketWrapper> ptr) noexcept
-      : wPtr_(std::move(ptr)) {}
-
-  PacketPtr(const PacketPtr& other) noexcept {
-    wPtr_ = other.wPtr_;
+  PacketPtr(const PacketPtr& other) noexcept : pkt_(other.pkt_) {
+    addRef();
   }
 
-  PacketPtr(PacketPtr&& other) noexcept {
-    wPtr_ = std::move(other.wPtr_);
-  }
+  PacketPtr(PacketPtr&& other) noexcept
+      : pkt_(std::exchange(other.pkt_, nullptr)) {}
 
   PacketPtr& operator=(const PacketPtr& other) noexcept {
-    wPtr_ = other.wPtr_;
+    if (pkt_ != other.pkt_) {
+      other.addRef();
+      release();
+      pkt_ = other.pkt_;
+    }
     return *this;
   }
 
   PacketPtr& operator=(PacketPtr&& other) noexcept {
-    wPtr_ = std::move(other.wPtr_);
+    if (this != &other) {
+      release();
+      pkt_ = std::exchange(other.pkt_, nullptr);
+    }
     return *this;
   }
 
-  ~PacketPtr() = default;
+  ~PacketPtr() {
+    release();
+  }
 
   packsim::Packet* operator->() const noexcept {
     return get();
@@ -206,25 +157,64 @@ class PacketPtr {
   }
 
   bool operator!() const noexcept {
-    auto ptr = wPtr_.get();
-    return (ptr == nullptr);
+    return pkt_ == nullptr;
   }
 
   FOLLY_ALWAYS_INLINE packsim::Packet* get() const noexcept {
-    auto ptr = wPtr_.get();
-    return (ptr == nullptr) ? nullptr : ptr->get();
+    return pkt_;
   }
 
  private:
-  std::shared_ptr<detail::PacketWrapper> wPtr_;
+  template <PacketType packetType>
+  friend PacketPtr createPacket(uint32_t payloadSize);
+
+  // Takes over a packet just taken from the pool, as its only holder.
+  explicit PacketPtr(Packet* FOLLY_NONNULL pkt) noexcept : pkt_(pkt) {
+    pkt_->refs.count_.store(1, std::memory_order_relaxed);
+#ifdef LOG_POOL_ALLOCATIONS
+    XLOGF(
+        INFO,
+        "==> Took address {} from global pool.",
+        static_cast<void*>(pkt_));
+#endif
+  }
+
+  void addRef() const noexcept {
+    if (pkt_ == nullptr) {
+      return;
+    }
+
+    [[maybe_unused]] const uint16_t holders =
+        pkt_->refs.count_.fetch_add(1, std::memory_order_relaxed);
+    XDCHECK_LT(holders, std::numeric_limits<uint16_t>::max());
+  }
+
+  void release() noexcept {
+    if (pkt_ == nullptr) {
+      return;
+    }
+
+    if (pkt_->refs.count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      GlobalManager::returnPacket(pkt_);
+#ifdef LOG_POOL_ALLOCATIONS
+      XLOGF(
+          INFO,
+          "<== Returned address {} to global pool.",
+          static_cast<void*>(pkt_));
+#endif
+    }
+  }
+
+  // The packet this handle holds, or nullptr.
+  Packet* pkt_{nullptr};
 };
 
 /**
  * Use this to create a new packet loaded from global pool.
  */
 template <PacketType packetType>
-static PacketPtr createPacket(uint32_t const payloadSize = 0) {
-  auto pktPtr = PacketPtr(detail::PacketWrapper::make<packetType>());
+PacketPtr createPacket(uint32_t const payloadSize) {
+  auto pktPtr = PacketPtr(GlobalManager::takePacket<packetType>());
   pktPtr.as<packetType, /*UseDynamicCast=*/false>()->reset();
   pktPtr->payloadSize = payloadSize;
   pktPtr->pktType = packetType;

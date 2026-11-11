@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cstdint>
 #include <optional>
@@ -205,9 +206,49 @@ struct Packet {
   PacketType pktType;
   // Header size in bytes
   uint16_t headerSize{0};
+
+  /**
+   * Number of `PacketPtr`s holding this packet. Atomic because a packet's last
+   * reference can be dropped on another PDES worker thread. 16 bits so it
+   * fills the padding before `payloadSize` and no packet type changes size; a
+   * packet has a handful of holders, never 65535.
+   *
+   * NOTE: Copying a packet's fields must not copy who holds it, so copies and
+   * assignments leave the count alone. Only `PacketPtr` changes the count.
+   */
+  class RefCount {
+   public:
+    RefCount() = default;
+    ~RefCount() = default;
+    RefCount(const RefCount& /* other */) noexcept {}
+    RefCount(RefCount&& /* other */) noexcept {}
+    RefCount& operator=(const RefCount& /* other */) noexcept {
+      return *this;
+    }
+    RefCount& operator=(RefCount&& /* other */) noexcept {
+      return *this;
+    }
+
+    // Number of `PacketPtr`s holding the packet, e.g. 1 for a new packet.
+    uint16_t holders() const noexcept {
+      return count_.load(std::memory_order_relaxed);
+    }
+
+   private:
+    friend class PacketPtr;
+
+    // Holders of the packet; 0 while it sits in a pool.
+    std::atomic<uint16_t> count_{0};
+  };
+
+  // Owned by `PacketPtr`; `reset()` deliberately leaves it alone.
+  RefCount refs;
+
   // Payload size in bytes
   uint32_t payloadSize{0};
 };
+
+static_assert(sizeof(Packet) == 24, "Packet::refs must fit in padding");
 
 struct EthernetPacket : Packet {
   explicit EthernetPacket() : Packet(PacketType::ETHERNET, 0) {
