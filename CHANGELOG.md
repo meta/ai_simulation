@@ -55,6 +55,14 @@ on `main` has the detail.
   first-hop switch delivers to itself, without crossing another switch. A
   transport receives it as `Transport::PortTopology::firstHopDstPorts`, beside
   `reachableDstPorts`.
+- `INicDatapath`, in `packsim/nic/nic-datapath.h`: the NIC hardware that
+  times each packet a transport sends or receives, including the NIC's payload
+  reads and writes. Every transport times its packets through one:
+  `SimpleNicDatapath`, in `packsim/nic/simple-nic-datapath.h`, which keeps
+  `NicConfig`'s flat memory, unless its owner installs another with
+  `Transport::setNicDatapath`. `Transport::shareNicDatapath` makes the
+  transports of one NIC, such as the planes of a `PerPlaneTransport`, reserve
+  the same datapath. With `SimpleNicDatapath`, results do not change.
 
 ### Changed
 
@@ -80,6 +88,15 @@ on `main` has the detail.
   more it is given back, so packets freed on switch threads return to the
   heap. Runs with link-layer retry need much less memory at higher thread
   counts; results do not change.
+
+### Removed
+
+- `Transport::setGetPayloadReadLatencyNsFn`, `setGetPayloadWriteLatencyNsFn`,
+  their function types, `readBytesFromMemory`, `writeBytesToMemory` and
+  `setSharedMemory`. A transport reserves its NIC's datapath instead
+  (`Transport::nicDatapath`), and an owner that sets payload latencies by
+  address gives them to `SimpleNicDatapath`
+  (`SimpleNicDatapath::PayloadLatencyFns`).
 
 ### Fixed
 

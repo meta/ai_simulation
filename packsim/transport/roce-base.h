@@ -24,6 +24,7 @@
 #include "packsim/if/gen-cpp2/config_types.h"
 #include "packsim/if/gen-cpp2/results_types.h"
 #include "packsim/kernel/device-id.h"
+#include "packsim/kernel/time.h"
 #include "packsim/nic/nic-rx-buffer.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 #include "packsim/transport/congestion-control.h"
@@ -193,7 +194,8 @@ class RoceSocketBase : public Socket,
     return errorRecovery_ && errorRecovery_->isFailed();
   }
 
-  virtual void scheduleSend(uint64_t delayNs, const SendInfo& info);
+  // Send `info`'s packet `delay` from now and record it for retransmission.
+  virtual void scheduleSend(Time delay, const SendInfo& info);
   virtual void ackRcvd(uint32_t seqNum, uint32_t psn);
   virtual void nackRcvd(uint32_t expectedPsn, uint8_t nackTime);
   virtual void cnpRcvd();

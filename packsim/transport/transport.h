@@ -7,7 +7,6 @@
 
 #pragma once
 
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,7 +14,6 @@
 #include <mutex>
 #include <optional>
 #include <set>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -23,6 +21,7 @@
 #include <vector>
 
 #include <fmt/format.h>
+#include <folly/CppAttributes.h>
 #include <folly/container/F14Map.h>
 #include <folly/logging/xlog.h>
 
@@ -32,7 +31,7 @@
 #include "packsim/kernel/data-rate.h"
 #include "packsim/kernel/device-id.h"
 #include "packsim/kernel/sim-context.h"
-#include "packsim/nic/simple-memory.h"
+#include "packsim/nic/nic-datapath.h"
 #include "packsim/packet/pfc.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 // @oss-disable
@@ -234,6 +233,9 @@ struct TransportParams {
 class Transport {
  public:
   /**
+   * Build a transport that times its packets with a SimpleNicDatapath of the
+   * NIC's configuration until its owner installs another datapath.
+   *
    * @param simCtx     Simulation context the transport schedules on.
    * @param id         Address of the NIC this transport runs on.
    * @param nicConfig  The NIC's configuration; it must outlive the transport.
@@ -244,17 +246,7 @@ class Transport {
   explicit Transport(
       SimContext* simCtx,
       const FlexDeviceId& id,
-      const packsim::thrift::NicConfig* nicConfig)
-      : simCtx_(simCtx), id_(id), nicConfig_(nicConfig) {
-    const double memoryBytesPerNs = *nicConfig_->readGbps() / 8.0;
-    const double readLatencyNs = *nicConfig_->readLatencyNs();
-    memory_ = std::make_unique<SimpleMemory>(
-        memoryBytesPerNs,
-        memoryBytesPerNs,
-        readLatencyNs,
-        getValidatedWriteLatencyNs(*nicConfig_).value_or(readLatencyNs));
-    nicBps_ = DataRate(*nicConfig_->speed()).getBps();
-  }
+      const packsim::thrift::NicConfig* nicConfig);
   virtual ~Transport() = default;
   virtual Socket* connect(
       const FlexDeviceId& dst,
@@ -407,111 +399,37 @@ class Transport {
     onMessageAcked_ = cb;
   }
 
-  // Fixed latency in ns of this NIC reading `sizeBytes` of payload at `addr`
-  // in its own memory. `sizeBytes` is never zero.
-  using GetPayloadReadLatencyNsFn =
-      std::function<uint64_t(uint64_t addr, size_t sizeBytes)>;
-
-  /**
-   * Charge each payload read whose address the transport knows with this
-   * function's latency instead of NicConfig.readLatencyNs. Read bandwidth is
-   * unchanged. Only a transport that passes the address to
-   * readBytesFromMemory() consults it.
-   *
-   * @param fn  Fixed latency of one read, by address and size.
-   */
-  void setGetPayloadReadLatencyNsFn(const GetPayloadReadLatencyNsFn& fn) {
-    getPayloadReadLatencyNsFn_ = fn;
+  // The NIC hardware that times this transport's packets.
+  [[nodiscard]] INicDatapath& nicDatapath() noexcept {
+    return sharedNicDatapath_ != nullptr ? *sharedNicDatapath_
+                                         : *ownedNicDatapath_;
   }
 
   /**
-   * Reserve this NIC's memory for one payload read.
+   * Time every packet reserved from now on with `datapath`, in place of the
+   * datapath this transport uses. Packets already reserved keep the delays they
+   * got.
    *
-   * @param bytes      Bytes read.
-   * @param localAddr  Where the payload lives in this NIC's memory, when the
-   *                   caller knows it.
-   *
-   * @return           Delay in nanoseconds until the read completes. A read
-   *                   of at least one byte with an address takes its fixed
-   *                   latency from the function set by
-   *                   setGetPayloadReadLatencyNsFn(), when there is one; every
-   *                   other read takes NicConfig.readLatencyNs.
+   * @param datapath  The NIC's datapath. Must not be null.
    */
-  [[nodiscard]] uint64_t readBytesFromMemory(
-      size_t bytes,
-      std::optional<uint64_t> localAddr = std::nullopt) {
-    auto* mem = sharedMemory_ ? sharedMemory_ : memory_.get();
-    // Having no function installed is the default configuration, not a wiring
-    // bug: a transport charges the flat latency unless its owner installs one.
-    if (bytes == 0 || !localAddr.has_value() || !getPayloadReadLatencyNsFn_) {
-      return mem->getReadDelayNs(bytes, simCtx_->nowNs());
-    }
-    return mem->getReadDelayNs(
-        bytes, simCtx_->nowNs(), getPayloadReadLatencyNsFn(*localAddr, bytes));
-  }
-
-  // Fixed latency in ns of this NIC writing `sizeBytes` of received payload at
-  // `addr` in its own memory. `sizeBytes` is never zero.
-  using GetPayloadWriteLatencyNsFn =
-      std::function<uint64_t(uint64_t addr, size_t sizeBytes)>;
+  virtual void setNicDatapath(std::unique_ptr<INicDatapath> datapath);
 
   /**
-   * Charge the memory write of every received payload, so a transport that
-   * asks writeBytesToMemory() can hold a packet until its payload write
-   * completes. A write of at least one byte whose address the transport knows
-   * takes this function's latency, a write of zero bytes takes no fixed
-   * latency, and any other write takes the NIC's write latency:
-   * NicConfig.writeLatencyNs, or NicConfig.readLatencyNs when that is unset.
+   * Time this transport's packets with a datapath another transport of the same
+   * NIC owns, so that both reserve the same NIC hardware, as the planes of a
+   * PerPlaneTransport do.
    *
-   * @param fn  Fixed latency of one write, by address and size.
+   * @param datapath  The datapath. It must outlive this transport, unless this
+   *                  transport is given another datapath first.
    */
-  void setGetPayloadWriteLatencyNsFn(const GetPayloadWriteLatencyNsFn& fn) {
-    getPayloadWriteLatencyNsFn_ = fn;
+  void shareNicDatapath(INicDatapath& datapath) noexcept {
+    sharedNicDatapath_ = &datapath;
   }
 
-  /**
-   * Reserve this NIC's memory for one received payload write.
-   *
-   * @param bytes      Bytes written. A write of zero bytes takes no fixed
-   *                   latency, so it completes just after the writes already
-   *                   reserved.
-   * @param localAddr  Where the payload is written in this NIC's memory, when
-   *                   the caller knows it.
-   *
-   * @return           Delay in nanoseconds until the write completes, or
-   *                   std::nullopt when neither a write latency function nor
-   *                   NicConfig.writeLatencyNs is set: then nothing is
-   *                   reserved and the payload counts as written on arrival.
-   *                   A write of at least one byte takes the function's latency
-   *                   when there is one and the address is known, and the
-   *                   NIC's write latency otherwise. Writes complete in the
-   *                   order they are reserved.
-   */
-  [[nodiscard]] std::optional<uint64_t> writeBytesToMemory(
-      size_t bytes,
-      std::optional<uint64_t> localAddr) {
-    // Receive-side writes are charged only on request; without a function or a
-    // configured write latency a transport treats every payload as written
-    // when it arrives.
-    if (!getPayloadWriteLatencyNsFn_ &&
-        !nicConfig_->writeLatencyNs().has_value()) {
-      return std::nullopt;
-    }
-    auto* mem = sharedMemory_ ? sharedMemory_ : memory_.get();
-    if (bytes == 0) {
-      return mem->getWriteDelayNs(0, simCtx_->nowNs(), /* latencyNs= */ 0.0);
-    }
-    if (!localAddr.has_value() || !getPayloadWriteLatencyNsFn_) {
-      return mem->getWriteDelayNs(bytes, simCtx_->nowNs());
-    }
-    return mem->getWriteDelayNs(
-        bytes, simCtx_->nowNs(), getPayloadWriteLatencyNsFn(*localAddr, bytes));
-  }
-
-  // Use an externally-owned SimpleMemory instead of the built-in one.
-  // The caller must ensure the shared memory outlives this transport.
-  void setSharedMemory(SimpleMemory* shared) {
-    sharedMemory_ = shared;
+  // The configuration of the NIC this transport runs on.
+  [[nodiscard]] const packsim::thrift::NicConfig& getNicConfig()
+      const noexcept {
+    return *nicConfig_;
   }
 
   Socket* findOrMakeSocket(
@@ -610,58 +528,13 @@ class Transport {
 
   FlexDeviceId id_;
   const packsim::thrift::NicConfig* nicConfig_;
-  std::unique_ptr<SimpleMemory> memory_{nullptr};
-  SimpleMemory* sharedMemory_{nullptr};
+  // The datapath this transport owns: a SimpleNicDatapath of nicConfig_ until
+  // its owner installs another.
+  std::unique_ptr<INicDatapath> ownedNicDatapath_;
+  // The datapath of another transport of this NIC, when this transport shares
+  // it; ownedNicDatapath_ is then unused.
+  INicDatapath* FOLLY_NULLABLE sharedNicDatapath_{nullptr};
   uint64_t nicBps_;
-
-  // Fixed latency of one payload read from the function the owner installed.
-  // readBytesFromMemory() is its only caller and calls it only after one is
-  // installed.
-  uint64_t getPayloadReadLatencyNsFn(
-      const uint64_t addr,
-      const size_t sizeBytes) const {
-    XCHECK(getPayloadReadLatencyNsFn_)
-        << "no payload-read latency function registered";
-    return getPayloadReadLatencyNsFn_(addr, sizeBytes);
-  }
-
-  GetPayloadReadLatencyNsFn getPayloadReadLatencyNsFn_;
-
-  // Fixed latency of one received payload write from the function the owner
-  // installed. writeBytesToMemory() is its only caller and calls it only after
-  // one is installed.
-  uint64_t getPayloadWriteLatencyNsFn(
-      const uint64_t addr,
-      const size_t sizeBytes) const {
-    XCHECK(getPayloadWriteLatencyNsFn_)
-        << "no payload-write latency function registered";
-    return getPayloadWriteLatencyNsFn_(addr, sizeBytes);
-  }
-
-  GetPayloadWriteLatencyNsFn getPayloadWriteLatencyNsFn_;
-
-  /**
-   * Read NicConfig.writeLatencyNs.
-   *
-   * @param nicConfig  This NIC's configuration.
-   *
-   * @return           The configured write latency in ns, or std::nullopt when
-   *                   the field is unset.
-   * @throw std::invalid_argument  The value is negative or not finite.
-   */
-  static std::optional<double> getValidatedWriteLatencyNs(
-      const packsim::thrift::NicConfig& nicConfig) {
-    const std::optional<double> latencyNs =
-        nicConfig.writeLatencyNs().to_optional();
-    if (latencyNs.has_value() &&
-        (!std::isfinite(*latencyNs) || *latencyNs < 0)) {
-      throw std::invalid_argument(
-          fmt::format(
-              "NicConfig.writeLatencyNs must be finite and not negative, got {}",
-              *latencyNs));
-    }
-    return latencyNs;
-  }
 
   // Send a packet through the function the owner registered. Nothing invokes
   // sendPacketFn_ directly; this is its only reader and it asserts the owner

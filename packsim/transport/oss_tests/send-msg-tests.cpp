@@ -16,11 +16,41 @@
 #include <thrift/lib/cpp2/FieldRef.h>
 
 #include "packsim/if/gen-cpp2/transport_stats_types.h"
+#include "packsim/kernel/time.h"
+#include "packsim/nic/nic-datapath.h"
 #include "packsim/transport/oss_tests/send-msg-test-fixture.h"
 #include "packsim/transport/roce-base.h"
+#include "packsim/transport/roce-constants.h"
 #include "packsim/transport/transport.h"
 
 namespace packsim {
+
+namespace {
+
+// A NIC datapath that records the payload bytes of each packet sent through it
+// and delays nothing.
+class PayloadReadRecordingDatapath final : public INicDatapath {
+ public:
+  // `payloadReadBytes` must outlive the datapath.
+  explicit PayloadReadRecordingDatapath(std::vector<uint64_t>& payloadReadBytes)
+      : payloadReadBytes_(payloadReadBytes) {}
+
+  Time reserveTx(const TxPacket& packet) override {
+    if (packet.payloadRead.has_value()) {
+      payloadReadBytes_.push_back(packet.payloadRead->bytes);
+    }
+    return Time{};
+  }
+
+  std::optional<Time> reserveRx(const RxPacket& /*packet*/) override {
+    return std::nullopt;
+  }
+
+ private:
+  std::vector<uint64_t>& payloadReadBytes_;
+};
+
+} // namespace
 
 class OptimisticRoceTest : public TransportTest {
   void makeTransports() override {
@@ -279,6 +309,27 @@ TEST_F(GoBackNRoceTest, SendMessageLossy) {
   EXPECT_GT(*roceV2Stats.retxBytes(), 0u);
   EXPECT_EQ(*roceV2Stats.retxByTimer(), 0u);
   EXPECT_EQ(*roceV2Stats.retxByNack(), *roceV2Stats.retxPkts());
+}
+
+// A retransmitted packet's payload is read from memory again, as its first
+// copy's was.
+TEST_F(GoBackNRoceTest, RetransmittedPacketReadsItsPayloadAgain) {
+  std::vector<uint64_t> payloadReadBytes;
+  srcTransport_->setNicDatapath(
+      std::make_unique<PayloadReadRecordingDatapath>(payloadReadBytes));
+  lossy_ = true;
+  scheduleSendMsgAndCheck();
+
+  const auto summary = srcTransport_->getNicStatsSummaryResults();
+  const auto& transportStats = *summary.nicStats()->transport();
+  ASSERT_EQ(
+      transportStats.getType(), packsim::thrift::TransportStats::Type::roceV2);
+  const uint64_t retransmittedPackets =
+      *transportStats.roceV2().value().retxPkts();
+  ASSERT_GT(retransmittedPackets, 0u);
+  EXPECT_EQ(
+      payloadReadBytes.size(),
+      kMsgSize / kMaxRdmaPayload + retransmittedPackets);
 }
 
 // An in-order receiver sees no gap when a message's last packet is lost, so

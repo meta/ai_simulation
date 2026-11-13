@@ -134,11 +134,13 @@ struct NicConfig {
   // finite and not negative. Set, the NIC charges every received payload write:
   // a transport that holds each received data packet until its payload is
   // written holds it for at least this latency plus the write's bandwidth term
-  // at readGbps, and only then acks it. A per-address write latency installed
-  // by the transport's owner takes precedence for a write whose address the
-  // transport knows. Unset, a payload counts as written on arrival unless such
-  // a function is installed, and a write the function does not cover takes
-  // readLatencyNs. No effect with RoCEv2, which never charges it.
+  // at readGbps, and only then acks it. A per-address write latency that the
+  // transport's owner gives the NIC's SimpleNicDatapath takes precedence for a
+  // write whose address the transport knows. Unset, a payload counts as written
+  // on arrival unless such a function is given, and a write the function does
+  // not cover takes readLatencyNs. A datapath the owner installs in place of
+  // SimpleNicDatapath times the writes itself. No effect with RoCEv2, which
+  // never charges it.
   // @oss-disable
   180: optional double writeLatencyNs;
   4: i64 maxQpDepth = -1;

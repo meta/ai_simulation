@@ -23,8 +23,10 @@
 #include "packsim/if/gen-cpp2/roce_v2_config_constants.h"
 #include "packsim/if/gen-cpp2/transport_stats_types.h"
 #include "packsim/kernel/device-id.h"
+#include "packsim/kernel/time.h"
 #include "packsim/link-layer/cbfc/nic-rx-credit-bridge.h"
 #include "packsim/link-layer/eth-port.h"
+#include "packsim/nic/nic-datapath.h"
 #include "packsim/packet/ptr/PacketPtr.h"
 #include "packsim/packet/roce.h"
 
@@ -301,12 +303,12 @@ void RoceSocketBase::fetchDataAndSend(
       getDstId().toString());
   uint32_t bytesLeft = bytes;
   bool isFirstPkt = true;
-  uint64_t readLatency = 0;
 
   while (bytesLeft > 0 || isFirstPkt) {
     const uint32_t pktSize = std::min(bytesLeft, uint32_t{kMaxRdmaPayload});
     const bool isLastPkt = (bytesLeft == pktSize);
-    readLatency = transport_->readBytesFromMemory(pktSize);
+    const Time readDelay = transport_->nicDatapath().reserveTx(
+        {.payloadRead = INicDatapath::PayloadAccess{.bytes = pktSize}});
     const SendInfo info(
         {.packetSize = pktSize,
          .isFirstPkt = isFirstPkt,
@@ -320,7 +322,7 @@ void RoceSocketBase::fetchDataAndSend(
          .callbackOnSend = isLastPkt && endOfQuotaChunk,
          .writeImmData = writeImmData,
          .sendOrWriteData = sendOrWriteData});
-    scheduleSend(readLatency, info);
+    scheduleSend(readDelay, info);
     isFirstPkt = false;
     bytesLeft -= pktSize;
   }
@@ -331,11 +333,8 @@ void RoceSocketBase::fetchDataAndSend(
   }
 }
 
-void RoceSocketBase::scheduleSend(
-    const uint64_t delayNs,
-    const SendInfo& info) {
-  simCtx_->schedule(
-      Time::fromNs(delayNs), &RoceSocketBase::createAndSendPkt, this, info);
+void RoceSocketBase::scheduleSend(const Time delay, const SendInfo& info) {
+  simCtx_->schedule(delay, &RoceSocketBase::createAndSendPkt, this, info);
 
   // Record sent packet for potential retransmission (error recovery).
   if (errorRecovery_) {
@@ -733,12 +732,9 @@ uint64_t RoceSocketBase::executeRetransmit(const uint64_t quota) {
   for (const auto& info : batch.packets) {
     minPsn = std::min(info.psn, minPsn);
     maxPsn = std::max(info.psn, maxPsn);
-    const auto readLatency = transport_->readBytesFromMemory(info.packetSize);
-    simCtx_->schedule(
-        Time::fromNs(readLatency),
-        &RoceSocketBase::createAndSendPkt,
-        this,
-        info);
+    const Time readDelay = transport_->nicDatapath().reserveTx(
+        {.payloadRead = INicDatapath::PayloadAccess{.bytes = info.packetSize}});
+    simCtx_->schedule(readDelay, &RoceSocketBase::createAndSendPkt, this, info);
   }
   if (!batch.packets.empty()) {
     XLOGF(
