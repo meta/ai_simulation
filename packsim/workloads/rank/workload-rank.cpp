@@ -263,8 +263,40 @@ std::unique_ptr<Message> WorkloadRank::sendWithQPN(
     const uint32_t writeImmData,
     const uint32_t sendOrWriteData,
     const uint64_t dataPtr) {
+  auto msg = makeSendWithQPN(
+      toRank,
+      size,
+      chunkId,
+      localQPN,
+      remoteQPN,
+      endpointId,
+      dstEndpointId,
+      sendDelayNs,
+      /*writeImm=*/writeImm,
+      /*write=*/write,
+      writeImmData,
+      sendOrWriteData,
+      dataPtr);
+  submitSend(*msg);
+  return msg;
+}
+
+std::unique_ptr<Message> WorkloadRank::makeSendWithQPN(
+    const uint32_t toRank,
+    const uint32_t size,
+    const uint32_t chunkId,
+    const uint32_t localQPN,
+    const uint32_t remoteQPN,
+    const uint32_t endpointId,
+    const uint32_t dstEndpointId,
+    const uint64_t sendDelayNs,
+    const bool writeImm,
+    const bool write,
+    const uint32_t writeImmData,
+    const uint32_t sendOrWriteData,
+    const uint64_t dataPtr) const {
   if (parent_) {
-    return parent_->sendWithQPN(
+    return parent_->makeSendWithQPN(
         toRank,
         size,
         chunkId,
@@ -273,8 +305,8 @@ std::unique_ptr<Message> WorkloadRank::sendWithQPN(
         endpointId,
         dstEndpointId,
         sendDelayNs,
-        writeImm,
-        write,
+        /*writeImm=*/writeImm,
+        /*write=*/write,
         writeImmData,
         sendOrWriteData,
         dataPtr);
@@ -303,8 +335,15 @@ std::unique_ptr<Message> WorkloadRank::sendWithQPN(
   msg->writeImmData = writeImmData;
   msg->sendOrWriteData = sendOrWriteData;
   msg->dataPtr = dataPtr;
-  sendMessageFn_(msg.get());
   return msg;
+}
+
+void WorkloadRank::submitSend(Message& msg) const {
+  if (parent_) {
+    parent_->submitSend(msg);
+    return;
+  }
+  sendMessageFn_(&msg);
 }
 
 std::unique_ptr<Message> WorkloadRank::recvWithQPN(
@@ -318,8 +357,34 @@ std::unique_ptr<Message> WorkloadRank::recvWithQPN(
     const uint64_t sendDelayNs,
     const bool isRead,
     const uint64_t dataPtr) {
+  auto msg = makeRecvWithQPN(
+      fromRank,
+      size,
+      chunkId,
+      localQPN,
+      remoteQPN,
+      endpointId,
+      dstEndpointId,
+      sendDelayNs,
+      /*isRead=*/isRead,
+      dataPtr);
+  submitRecv(*msg);
+  return msg;
+}
+
+std::unique_ptr<Message> WorkloadRank::makeRecvWithQPN(
+    const uint32_t fromRank,
+    const uint32_t size,
+    const uint32_t chunkId,
+    const uint32_t localQPN,
+    const uint32_t remoteQPN,
+    const uint32_t endpointId,
+    const uint32_t dstEndpointId,
+    const uint64_t sendDelayNs,
+    const bool isRead,
+    const uint64_t dataPtr) const {
   if (parent_) {
-    return parent_->recvWithQPN(
+    return parent_->makeRecvWithQPN(
         fromRank,
         size,
         chunkId,
@@ -328,7 +393,7 @@ std::unique_ptr<Message> WorkloadRank::recvWithQPN(
         endpointId,
         dstEndpointId,
         sendDelayNs,
-        isRead,
+        /*isRead=*/isRead,
         dataPtr);
   }
   auto msg = std::make_unique<Message>();
@@ -352,8 +417,15 @@ std::unique_ptr<Message> WorkloadRank::recvWithQPN(
   msg->endpointId = endpointId;
   msg->dstEndpointId = dstEndpointId;
   msg->sendDelayNs = sendDelayNs;
-  recvMessageFn_(msg.get()); // WorkloadNode::makeReceiveRequest
   return msg;
+}
+
+void WorkloadRank::submitRecv(Message& msg) const {
+  if (parent_) {
+    parent_->submitRecv(msg);
+    return;
+  }
+  recvMessageFn_(&msg); // WorkloadNode::makeReceiveRequest
 }
 
 const QPNPair& WorkloadRank::getDataQPNs(const uint32_t peer) const {

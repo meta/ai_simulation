@@ -328,6 +328,108 @@ class WorkloadRank {
       bool isRead = false,
       uint64_t dataPtr = 0);
 
+  /**
+   * Build the send sendWithQPN() posts, from the same arguments, without
+   * posting it, so that a rank can fill in more of the message before the
+   * transport takes it. A child rank builds the message its root owner would.
+   *
+   * @param toRank            The rank the message goes to.
+   * @param size              Payload size in bytes.
+   * @param chunkId           The message's connectionMessageId, such as its
+   *                          chunk index.
+   * @param localQPN          This rank's queue pair.
+   * @param remoteQPN         The peer's queue pair.
+   * @param endpointId        The endpoint of this rank that sends the message:
+   *                          an index into this rank's Workload.rankToIdList
+   *                          entry.
+   * @param dstEndpointId     The endpoint of toRank that receives it: an index
+   *                          into toRank's Workload.rankToIdList entry.
+   * @param sendDelayNs       Stored as the message's sendDelayNs.
+   * @param writeImm          Whether the message is a WRITE with immediate
+   *                          data.
+   * @param write             Whether the message is a one-sided WRITE.
+   * @param writeImmData      The immediate data of a WRITE with immediate data.
+   * @param sendOrWriteData   A value the message carries to the receiver, which
+   *                          reports it in the receive's completion.
+   * @param dataPtr           For a WRITE, where the payload is written in the
+   *                          peer's memory.
+   * @return                  The message. The caller owns it and keeps it
+   *                          until the transport completes it.
+   * @throw std::out_of_range If Workload.rankToIdList has no entry for this
+   *                          rank or for toRank, or the entry has no endpoint
+   *                          at endpointId or dstEndpointId.
+   */
+  [[nodiscard]] std::unique_ptr<Message> makeSendWithQPN(
+      uint32_t toRank,
+      uint32_t size,
+      uint32_t chunkId,
+      uint32_t localQPN,
+      uint32_t remoteQPN,
+      uint32_t endpointId,
+      uint32_t dstEndpointId,
+      uint64_t sendDelayNs,
+      bool writeImm,
+      bool write,
+      uint32_t writeImmData,
+      uint32_t sendOrWriteData,
+      uint64_t dataPtr) const;
+
+  /**
+   * Build the receive recvWithQPN() posts, from the same arguments, without
+   * posting it, so that a rank can fill in more of the message before the
+   * transport takes it. A child rank builds the message its root owner would.
+   *
+   * @param fromRank          The rank the message comes from.
+   * @param size              Payload size in bytes.
+   * @param chunkId           The message's connectionMessageId, such as its
+   *                          chunk index.
+   * @param localQPN          This rank's queue pair.
+   * @param remoteQPN         The peer's queue pair.
+   * @param endpointId        The endpoint of this rank that receives the
+   *                          message: an index into this rank's
+   *                          Workload.rankToIdList entry.
+   * @param dstEndpointId     The endpoint of fromRank that sends it: an index
+   *                          into fromRank's Workload.rankToIdList entry.
+   * @param sendDelayNs       Stored as the message's sendDelayNs.
+   * @param isRead            Whether the message is a READ of the peer's
+   *                          memory, whose response this rank receives.
+   * @param dataPtr           For a READ, the address read in the peer's
+   *                          memory.
+   * @return                  The message. The caller owns it and keeps it
+   *                          until the transport completes it.
+   * @throw std::out_of_range If Workload.rankToIdList has no entry for this
+   *                          rank or for fromRank, or the entry has no
+   *                          endpoint at endpointId or dstEndpointId.
+   */
+  [[nodiscard]] std::unique_ptr<Message> makeRecvWithQPN(
+      uint32_t fromRank,
+      uint32_t size,
+      uint32_t chunkId,
+      uint32_t localQPN,
+      uint32_t remoteQPN,
+      uint32_t endpointId,
+      uint32_t dstEndpointId,
+      uint64_t sendDelayNs,
+      bool isRead,
+      uint64_t dataPtr) const;
+
+  /**
+   * Hand a send to the transport, through the root owner's send function.
+   *
+   * @param msg  A send from makeSendWithQPN(). The transport keeps a pointer to
+   *             it until it completes the send.
+   */
+  void submitSend(Message& msg) const;
+
+  /**
+   * Hand a receive to the transport, through the root owner's receive
+   * function.
+   *
+   * @param msg  A receive from makeRecvWithQPN(). The transport keeps a pointer
+   *             to it until it completes the receive.
+   */
+  void submitRecv(Message& msg) const;
+
   uint64_t getTimeNs();
 
   /**
