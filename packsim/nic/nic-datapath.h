@@ -46,6 +46,9 @@ class INicDatapath {
     // The payload the NIC reads from its memory for the packet, or none for a
     // packet whose bytes do not come from memory, such as an ACK.
     std::optional<PayloadAccess> payloadRead;
+    // The packet's egress port, as its position from 0 among the ports
+    // registered with the transport, when the transport chooses the port.
+    std::optional<uint16_t> portSlot;
   };
 
   // A packet the NIC received for the transport.
@@ -54,6 +57,9 @@ class INicDatapath {
     // the packet, or none for a packet whose payload is not written, such as an
     // ACK.
     std::optional<PayloadAccess> payloadWrite;
+    // The port the packet arrived on, as its position from 0 among the ports
+    // registered with the transport, when the transport knows it.
+    std::optional<uint16_t> portSlot;
   };
 
   virtual ~INicDatapath() = default;
