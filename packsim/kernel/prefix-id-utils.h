@@ -21,7 +21,7 @@ namespace packsim {
 // Create a dot-separated string key from integer components.
 // e.g. makePrefixKey({1, 2, 3, 4}) returns "1.2.3.4"
 inline std::string makePrefixKey(std::initializer_list<uint32_t> vals) {
-  return fmt::format("{}", fmt::join(vals, "."));
+  return fmt::format("{}", fmt::join(vals.begin(), vals.end(), "."));
 }
 
 // Create a dot-separated string key from a vector of integers.
