@@ -327,7 +327,7 @@ struct QPNPair {
   2: uint32 remote;
 }
 
-@thrift.ReserveIds{ids = [57]} // @oss-enable
+@thrift.ReserveIds{ids = [57, 58]} // @oss-enable
 struct Workload {
   // globally unique workload identifier
   1: string name;
@@ -396,6 +396,14 @@ struct Workload {
   // domain: an AllToAll or RING rank throws for a rank it leaves out.
   @cpp.Type{template = "folly::F14FastMap"}
   54: optional map<uint32, uint32> rankToNvDomain;
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
   // @oss-disable
   // @oss-disable
   // @oss-disable

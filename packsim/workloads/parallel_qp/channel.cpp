@@ -216,6 +216,11 @@ std::unique_ptr<Message> Channel::buildMessage(
   msg->isWriteImm = writeImm;
   msg->isWrite = write;
   msg->writeImmData = writeImmData;
+  // @oss-disable
+      // @oss-disable
+    // @oss-disable
+    // @oss-disable
+  // @oss-disable
   msg->channelID = channelId;
   msg->sizeBytes = sizeBytes;
   msg->localQPN = localQPN;

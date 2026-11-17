@@ -335,6 +335,10 @@ std::unique_ptr<Message> WorkloadRank::makeSendWithQPN(
   msg->writeImmData = writeImmData;
   msg->sendOrWriteData = sendOrWriteData;
   msg->dataPtr = dataPtr;
+  // @oss-disable
+    // @oss-disable
+    // @oss-disable
+  // @oss-disable
   return msg;
 }
 
