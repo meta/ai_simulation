@@ -42,6 +42,21 @@ class EthernetPort;
 
 struct Message { // @oss-enable
 // @oss-disable
+  // How the transport completed a message.
+  enum class CompletionStatus : uint8_t {
+    // The message completed normally.
+    SUCCESS,
+    // The message was fully executed, but its queue entered the error state
+    // while an earlier message kept it from completing.
+    COMPLETE_FLUSHED,
+    // The message's queue entered the error state before the message was
+    // fully executed, or the message was posted to a queue already in error.
+    FLUSHED_IN_ERROR,
+    // The receiver refused the message for want of a posted receive after the
+    // last retry the transport allows.
+    RNR_RETRY_EXCEEDED,
+  };
+
   uint32_t srcRank{};
   uint32_t dstRank{};
   uint32_t sizeBytes{};
@@ -85,9 +100,20 @@ struct Message { // @oss-enable
   bool isWrite{false};
   bool isWriteImm{false};
   bool isRead{false};
+  // How the transport completed this message. A transport without error
+  // completions leaves it SUCCESS. It sits after the bools to fill their
+  // padding, so it adds no size.
+  CompletionStatus completionStatus{CompletionStatus::SUCCESS};
   uint32_t writeImmData{0};
   uint64_t dataPtr{0};
   uint32_t sendOrWriteData{0};
+
+  // Whether the transport completed this message in error: true for every
+  // status but SUCCESS and COMPLETE_FLUSHED, whose message was fully executed.
+  [[nodiscard]] bool completedInError() const noexcept {
+    return completionStatus != CompletionStatus::SUCCESS &&
+        completionStatus != CompletionStatus::COMPLETE_FLUSHED;
+  }
 
   std::string toString() const {
     auto bool2int = [](bool b) { return b ? 1 : 0; };
