@@ -99,6 +99,20 @@ class WorkloadRank {
   void notify(uint32_t toRank);
   void postRecvNotify(uint32_t fromRank);
   bool isNotifyMsg(Message* msg) const;
+  /**
+   * Release the notify receive from `fromRank` that the transport completed.
+   * Unless it completed in error, also count a notification from `fromRank`
+   * for checkNotifyReceived(), post the next notify receive and call
+   * progress(). After a receive completed in error the rank holds no notify
+   * receive from `fromRank`.
+   *
+   * @param fromRank            The peer whose notify receive completed.
+   *
+   * @throw std::out_of_range   If the rank has posted no notify receive from
+   *                            `fromRank`.
+   * @throw std::runtime_error  If the rank holds no notify receive from
+   *                            `fromRank`.
+   */
   void notifyReceived(uint32_t fromRank);
   void notifyAcked(uint32_t toRank);
   bool checkNotifyReceived(uint32_t fromRank);

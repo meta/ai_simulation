@@ -971,7 +971,22 @@ bool WorkloadRank::isNotifyMsg(Message* msg) const {
 }
 
 void WorkloadRank::notifyReceived(const uint32_t fromRank) {
-  recvNotifyMessages_.at(fromRank).pop_front();
+  auto& receives = recvNotifyMessages_.at(fromRank);
+  if (receives.empty()) {
+    throw std::runtime_error(
+        fmt::format(
+            "Rank {} has no notify receive from rank {} to complete",
+            rank_,
+            fromRank));
+  }
+  const bool completedInError = receives.front()->completedInError();
+  receives.pop_front();
+  // A receive completed in error carries no notification, and none takes its
+  // place: a QP in error flushes every receive posted to it in a 0 ns event,
+  // so re-posting would keep simulated time from advancing.
+  if (completedInError) {
+    return;
+  }
   notifyRecvCount_[fromRank]++;
   postRecvNotify(fromRank);
   progress();
