@@ -27,6 +27,7 @@
 #include "packsim/if/gen-cpp2/config_types.h"
 #include "packsim/if/gen-cpp2/nic_config_types.h"
 #include "packsim/if/gen-cpp2/roce_v2_config_types.h"
+#include "packsim/if/gen-cpp2/topology_constants.h"
 #include "packsim/if/gen-cpp2/topology_types.h"
 #include "packsim/if/gen-cpp2/transport_config_types.h"
 #include "packsim/kernel/device-id.h"
@@ -39,6 +40,7 @@
 #include "packsim/node/port-reachability.h"
 // @oss-disable
 #include "packsim/switch/fb-switch.h"
+// @oss-disable
 
 namespace packsim {
 
@@ -316,13 +318,18 @@ GoBackNAckKind getGoBackNAckKind(
       : GoBackNAckKind::CUMULATIVE;
 }
 
-// Names of the NIC configs the accelerators' endpoints use, sorted.
+// Names of the NIC configs the accelerators use, sorted. An accelerator
+// without endpoint configs runs one endpoint on the NIC config named by
+// kDefaultNicConfig.
 std::set<std::string> getAccelNicConfigNames(
     const packsim::thrift::FlexTopology& topo) {
   std::set<std::string> names;
   for (const auto& [_, node] : *topo.nodes()) {
     if (*node.type() != packsim::thrift::NodeType::ACCEL) {
       continue;
+    }
+    if (node.endpointCfgs()->empty()) {
+      names.emplace(packsim::thrift::topology_constants::kDefaultNicConfig());
     }
     for (const auto& endpointCfg : *node.endpointCfgs()) {
       names.emplace(*endpointCfg.nicConfig());
@@ -378,6 +385,10 @@ FlexTopology::FlexTopology(
     : simCfg_(&sim), scheduler_(scheduler), random_(random) {
   topo_ = &(*sim.flex_topology());
   portReachability_ = buildPortReachability(*topo_);
+  // @oss-disable
+          // @oss-disable
+    // @oss-disable
+  // @oss-disable
 
   buildNodes(sim);
   if (const auto mismatch = describeGoBackNAckMismatch(sim)) {

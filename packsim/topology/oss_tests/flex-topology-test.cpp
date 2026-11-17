@@ -31,6 +31,7 @@
 #include "packsim/if/gen-cpp2/nic_config_types.h"
 #include "packsim/if/gen-cpp2/roce_v2_config_types.h"
 #include "packsim/if/gen-cpp2/switch_config_types.h"
+#include "packsim/if/gen-cpp2/topology_constants.h"
 #include "packsim/if/gen-cpp2/topology_types.h"
 #include "packsim/if/gen-cpp2/transport_config_types.h"
 #include "packsim/kernel/scheduler.h"
@@ -591,6 +592,47 @@ TEST_F(FlexTopologyGoBackNAckTest, IgnoresAConfigNoAcceleratorUses) {
       makeGoBackNNic(/*outOfOrder=*/false, /*selectiveGapRepair=*/false);
   (*simCfg_.nicConfigMap())["ooo"] =
       makeGoBackNNic(/*outOfOrder=*/true, /*selectiveGapRepair=*/false);
+  addAccel("accel0", "inOrder");
+  addAccel("accel1", "inOrder");
+
+  EXPECT_EQ(FlexTopology::describeGoBackNAckMismatch(simCfg_), std::nullopt);
+}
+
+// An accelerator without endpoint configs runs on the NIC config named by
+// kDefaultNicConfig, so that config takes part in the check.
+TEST_F(
+    FlexTopologyGoBackNAckTest,
+    ChecksTheDefaultConfigOfAnEndpointlessAccel) {
+  (*simCfg_.nicConfigMap())["inOrder"] =
+      makeGoBackNNic(/*outOfOrder=*/false, /*selectiveGapRepair=*/false);
+  (*simCfg_.nicConfigMap())
+      [packsim::thrift::topology_constants::kDefaultNicConfig()] =
+          makeGoBackNNic(/*outOfOrder=*/true, /*selectiveGapRepair=*/false);
+  addAccel("accel0", "inOrder");
+  auto& endpointless = (*simCfg_.flex_topology()->nodes())["accel1"];
+  endpointless.name() = "accel1";
+  endpointless.type() = packsim::thrift::NodeType::ACCEL;
+
+  const auto mismatch = FlexTopology::describeGoBackNAckMismatch(simCfg_);
+
+  ASSERT_TRUE(mismatch.has_value());
+  EXPECT_THAT(
+      *mismatch,
+      ::testing::HasSubstr(
+          "NicConfig 'default' runs RoCEv2 goBackN with "
+          "outofOrderPktSupport on and selectiveGapRepair off"));
+}
+
+// The config named by kDefaultNicConfig takes part only for an accelerator
+// without endpoint configs: here every accelerator names "inOrder".
+TEST_F(
+    FlexTopologyGoBackNAckTest,
+    IgnoresTheDefaultConfigWhenEveryAccelHasEndpoints) {
+  (*simCfg_.nicConfigMap())["inOrder"] =
+      makeGoBackNNic(/*outOfOrder=*/false, /*selectiveGapRepair=*/false);
+  (*simCfg_.nicConfigMap())
+      [packsim::thrift::topology_constants::kDefaultNicConfig()] =
+          makeGoBackNNic(/*outOfOrder=*/true, /*selectiveGapRepair=*/false);
   addAccel("accel0", "inOrder");
   addAccel("accel1", "inOrder");
 
