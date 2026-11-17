@@ -421,6 +421,10 @@ std::unique_ptr<Message> WorkloadRank::makeRecvWithQPN(
   msg->endpointId = endpointId;
   msg->dstEndpointId = dstEndpointId;
   msg->sendDelayNs = sendDelayNs;
+  // @oss-disable
+    // @oss-disable
+    // @oss-disable
+  // @oss-disable
   return msg;
 }
 

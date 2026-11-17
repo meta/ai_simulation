@@ -7,7 +7,11 @@
 
 #include "packsim/workloads/permutation-push-pull.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <stdexcept>
+#include <utility>
 
 #include <fmt/format.h>
 #include <folly/logging/xlog.h>
@@ -42,6 +46,13 @@ PermutationPushPullRank::PermutationPushPullRank(
             "post plain receives rather than READs",
             workloadName_));
   }
+
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+      // @oss-disable
+      // @oss-disable
 }
 
 void PermutationPushPullRank::run() {
@@ -56,6 +67,12 @@ void PermutationPushPullRank::run() {
                                                               : "PULL");
   }
 
+  // Posted before the start delay, so that a peer that starts earlier finds
+  // them.
+  if (servedReadsConsumeReceives_) {
+    postReceivesForServedReads();
+  }
+
   runAfterStartDelay([this] {
     startTimeNs_ = getTimeNs();
     if (workloadMode_ == workload::thrift::WorkloadMode::PULL) {
@@ -64,6 +81,31 @@ void PermutationPushPullRank::run() {
       startWrites();
     }
   });
+}
+
+void PermutationPushPullRank::postReceivesForServedReads() {
+  // dstRank_ splits its reads from this rank into chunks, and spreads them
+  // over the QPs, as startReads() does there; posting in the same order puts
+  // each receive on the QP of its READ, in that READ's turn. A receive takes
+  // no data: the READ's response carries it to the reader.
+  const uint32_t maxMsgSize = ceilDivide32(sendSize_, numChunks_);
+  const auto numQps = getTotalDataQPCount(dstRank_);
+  uint32_t qpNumToUse = 0;
+  // @oss-disable
+  uint32_t chunkId = 0;
+  for (uint64_t rem = sendSize_; rem > 0;
+       rem -= std::min<uint64_t>(rem, maxMsgSize)) {
+    std::unique_ptr<Message> msg;
+    if (isNicAwareModeActive()) {
+      // @oss-disable
+      msg = recvWithQPIndex(dstRank_, /*size=*/0, chunkId, qpNumToUse);
+      qpNumToUse = (qpNumToUse + 1) % numQps;
+    } else {
+      msg = recv(dstRank_, /*size=*/0, chunkId);
+    }
+    recvMsgs_.emplace(chunkId, std::move(msg));
+    ++chunkId;
+  }
 }
 
 void PermutationPushPullRank::startWrites() {
@@ -119,6 +161,7 @@ void PermutationPushPullRank::startWrites() {
 }
 
 void PermutationPushPullRank::startReads() {
+  readsStarted_ = true;
   const uint32_t maxMsgSize = ceilDivide32(sendSize_, numChunks_);
   uint64_t rem = sendSize_;
   uint32_t chunkId = 0;
@@ -165,6 +208,28 @@ void PermutationPushPullRank::startReads() {
 
   if (remReads_ == 0) {
     completeWorkload();
+  }
+}
+
+void PermutationPushPullRank::requestReceived(Message* msg) {
+  if (isNotifyMsg(msg)) {
+    PermutationRank::requestReceived(msg);
+    return;
+  }
+  const auto it = recvMsgs_.find(msg->connectionMessageId);
+  if (it == recvMsgs_.end()) {
+    throw std::runtime_error(
+        fmt::format(
+            "Rank {} received unexpected chunk {} from rank {}",
+            rank_,
+            msg->connectionMessageId,
+            msg->srcRank));
+  }
+  recvMsgs_.erase(it);
+  // Until its start delay ends the rank has posted no READ, so a receive that
+  // completes then leaves the rank to complete with its last READ.
+  if (readsStarted_) {
+    checkCompletionAndContinue();
   }
 }
 
@@ -227,7 +292,7 @@ void PermutationPushPullRank::checkCompletionAndContinue() {
 
 bool PermutationPushPullRank::complete() {
   if (workloadMode_ == workload::thrift::WorkloadMode::PULL) {
-    return remReads_ == 0;
+    return remReads_ == 0 && recvMsgs_.empty();
   }
   return remWrites_ == 0;
 }

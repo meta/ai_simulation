@@ -44,6 +44,14 @@ AllToAllPushPullRank::AllToAllPushPullRank(const WorkloadRankParams& params)
             "post plain receives rather than READs",
             workloadName_));
   }
+  // @oss-disable
+      // @oss-disable
+    // @oss-disable
+        // @oss-disable
+        // @oss-disable
+        // @oss-disable
+        // @oss-disable
+  // @oss-disable
 
   readMsgs_.resize(
       workloadMode_ == workload::thrift::WorkloadMode::PULL ? numRanks_ : 0);

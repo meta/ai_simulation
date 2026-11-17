@@ -26,14 +26,16 @@ namespace packsim {
  * In PUSH mode, each rank writes data to its destination rank.
  * In PULL mode, each rank reads data from its source rank.
  *
- * There is no notify exchange — WRITE/READ operations do not require
- * the remote side to post matching RECV buffers.
+ * There is no notify exchange. A WRITE or READ needs no matching receive at
+ * the remote side, except where each READ a rank serves consumes a receive
+ * that the rank posts (servedReadsConsumeReceives_).
  */
 class PermutationPushPullRank : public PermutationRank {
  public:
   explicit PermutationPushPullRank(const WorkloadRankParams& params);
 
   void run() override;
+  void requestReceived(Message* msg) override;
   void requestAcked(Message* msg) override;
   bool complete() override;
   uint64_t getExpectedBytes() override;
@@ -41,6 +43,11 @@ class PermutationPushPullRank : public PermutationRank {
  private:
   void startReads();
   void startWrites();
+  /**
+   * Post one receive, of no bytes, for each READ that dstRank_ posts to this
+   * rank, on the QP that the READ uses.
+   */
+  void postReceivesForServedReads();
   void checkCompletionAndContinue();
   void recordEndTime();
   void completeWorkload();
@@ -49,6 +56,10 @@ class PermutationPushPullRank : public PermutationRank {
   folly::F14FastMap<uint32_t, std::unique_ptr<Message>> writeMsgs_;
   uint32_t remReads_{0};
   uint32_t remWrites_{0};
+  // Whether each READ this rank serves consumes a receive this rank posts. The
+  // rank then completes only once all of those receives have completed too.
+  bool servedReadsConsumeReceives_{false};
+  bool readsStarted_{false};
 
   workload::thrift::WorkloadMode workloadMode_;
 };
