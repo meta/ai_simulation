@@ -72,7 +72,9 @@ struct Message { // @oss-enable
     // does not recognize, which it treats as an error.
     BAD_RESPONSE,
     // The message is a receive, and the message that arrived for it was
-    // longer than the receive or had a packet past its own last packet.
+    // longer than the receive or had a packet past its own last packet; or
+    // the message is a READ, and its response was longer than the READ asked
+    // for.
     LOCAL_LENGTH_ERROR,
   };
 
