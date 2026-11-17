@@ -59,6 +59,18 @@ struct Message { // @oss-enable
     // The transport made no forward progress on the message's queue pair for
     // as long as its timeout and retry count allow.
     RETRY_EXCEEDED,
+    // The responder rejected the message as an invalid request, for example
+    // a send longer than the receive posted for it.
+    REMOTE_INVALID_REQUEST,
+    // The responder rejected the message because the memory it names is
+    // invalid or not accessible.
+    REMOTE_ACCESS_ERROR,
+    // The responder could not carry out the message, for example because its
+    // queue is in the error state.
+    REMOTE_OPERATION_ERROR,
+    // The responder answered the message with a status that the transport
+    // does not recognize, which it treats as an error.
+    BAD_RESPONSE,
   };
 
   uint32_t srcRank{};
