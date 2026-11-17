@@ -221,6 +221,8 @@ std::unique_ptr<Message> Channel::buildMessage(
     // @oss-disable
     // @oss-disable
   // @oss-disable
+  // @oss-disable
+      // @oss-disable
   msg->channelID = channelId;
   msg->sizeBytes = sizeBytes;
   msg->localQPN = localQPN;

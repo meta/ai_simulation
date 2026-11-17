@@ -339,6 +339,7 @@ std::unique_ptr<Message> WorkloadRank::makeSendWithQPN(
     // @oss-disable
     // @oss-disable
   // @oss-disable
+  // @oss-disable
   return msg;
 }
 
@@ -424,6 +425,7 @@ std::unique_ptr<Message> WorkloadRank::makeRecvWithQPN(
   // @oss-disable
     // @oss-disable
     // @oss-disable
+  // @oss-disable
   // @oss-disable
   return msg;
 }
