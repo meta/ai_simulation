@@ -84,6 +84,17 @@ class WorkloadRank {
   void requestReceived(Message* msg);
   void requestAcked(Message* msg);
   /**
+   * Count `msg` in this rank's messagesCompletedInError result if the
+   * transport completed it in error. The workload node calls it for every
+   * message that reaches this rank after the node's resolve hooks, before
+   * requestReceived, tryHandleTransportAck or requestAcked sees the message:
+   * a handler can complete the rank, which takes the rank's result at once,
+   * and a rank-specific sub-pipeline can consume an acknowledgment.
+   *
+   * @param msg  A message the transport completed for this rank.
+   */
+  void recordCompletionStatus(const Message& msg) noexcept;
+  /**
    * Attempt to consume a transport ACK owned by a rank-specific sub-pipeline.
    *
    * @param msg  A transport-completed message for this workload.
@@ -150,6 +161,7 @@ class WorkloadRank {
     res.rank() = rank_;
     res.name() = workloadName_;
     res.iteration() = iteration_;
+    res.messagesCompletedInError() = messagesCompletedInError_;
     return res;
   }
 
@@ -536,6 +548,11 @@ class WorkloadRank {
   FOLLY_GTEST_FRIEND_TEST(
       WorkloadRankGetDataQPNsTest,
       GetDataQPNByIndexThrowsWhenOutOfRange);
+
+ private:
+  // The messages completed in error that reached this rank's handlers, as
+  // recordCompletionStatus counts them.
+  uint64_t messagesCompletedInError_{0};
 };
 
 } // namespace packsim

@@ -394,14 +394,24 @@ void PackSimSimulation::verifySimulationMetrics() {
     XLOGF(WARN, "Some transports report non-completion");
   }
 
+  // Checked before the ranks and the bytes: a message completed in error can
+  // leave bytes missing and its rank incomplete, and the error count names the
+  // cause.
+  uint64_t messagesCompletedInError = 0;
+  for (const auto& ctx : flexTopo_.simCtxs_) {
+    messagesCompletedInError += ctx->messagesCompletedInError;
+  }
+  if (messagesCompletedInError != 0) {
+    failUnlessIncompleteWorkloadsAllowed(
+        fmt::format(
+            "{} messages completed in error", messagesCompletedInError));
+  }
+
   if (!this->isWorkloadComplete()) {
-    auto msg = fmt::format(
-        "{} workload ranks didn't complete", incompleteWorkloadRanks_.size());
-    if (!*simCfg_->allowIncompleteWorkloads()) {
-      XLOGF(ERR, "{}", msg);
-      throw std::runtime_error(msg);
-    }
-    XLOGF(WARN, "{}", msg);
+    failUnlessIncompleteWorkloadsAllowed(
+        fmt::format(
+            "{} workload ranks didn't complete",
+            incompleteWorkloadRanks_.size()));
   }
 
   desEvents_ = scheduler_.getTotalEvents();
@@ -421,12 +431,17 @@ void PackSimSimulation::verifySimulationMetrics() {
         : fmt::format("Extra bytes: {}", totalBytes - totalBytesExpected);
     msg += fmt::format(
         " (expected: {}, actual: {})", totalBytesExpected, totalBytes);
-    if (!*simCfg_->allowIncompleteWorkloads()) {
-      XLOGF(ERR, "{}", msg);
-      throw std::runtime_error(msg);
-    }
-    XLOGF(WARN, "{}", msg);
+    failUnlessIncompleteWorkloadsAllowed(msg);
   }
+}
+
+void PackSimSimulation::failUnlessIncompleteWorkloadsAllowed(
+    const std::string& msg) const {
+  if (!*simCfg_->allowIncompleteWorkloads()) {
+    XLOGF(ERR, "{}", msg);
+    throw std::runtime_error(msg);
+  }
+  XLOGF(WARN, "{}", msg);
 }
 
 uint64_t PackSimSimulation::totalBytesRcvd() const {
@@ -780,6 +795,7 @@ void PackSimSimulation::getWorkloadResults(
     auto& [_, firstRankResult] = *wkldResult.perRank()->begin();
     uint64_t startTimeNs = *firstRankResult.startTimeNs();
     uint64_t endTimeNs = *firstRankResult.endTimeNs();
+    uint64_t messagesCompletedInError = 0;
     for (const auto& [_, rankResult] : *wkldResult.perRank()) {
       // Start time is when the last rank joins, to avoid measuring the impact
       // of start-time-jitter. This may occasionally result in
@@ -787,10 +803,12 @@ void PackSimSimulation::getWorkloadResults(
       startTimeNs = std::max(startTimeNs, *rankResult.startTimeNs());
       // End time is when the last rank completes
       endTimeNs = std::max(endTimeNs, *rankResult.endTimeNs());
+      messagesCompletedInError += *rankResult.messagesCompletedInError();
     }
     wkldResult.startTimeNs() = startTimeNs;
     wkldResult.endTimeNs() = endTimeNs;
     wkldResult.runTimeNs() = endTimeNs - startTimeNs;
+    wkldResult.messagesCompletedInError() = messagesCompletedInError;
   }
 
   for (const auto& workCfg : *simCfg_->newWorkloadSchedule()->workloads()) {

@@ -65,6 +65,19 @@ FlexDeviceId getEndpointNicId(
   return nicId;
 }
 
+/**
+ * Count `msg` in the context's messagesCompletedInError if a transport
+ * completed it in error.
+ *
+ * @param simCtx  The context of the workload node `msg` reached.
+ * @param msg     A message a transport completed.
+ */
+void countIfCompletedInError(SimContext& simCtx, const Message& msg) noexcept {
+  if (msg.completedInError()) {
+    ++simCtx.messagesCompletedInError;
+  }
+}
+
 } // namespace
 
 WorkloadNode::WorkloadNode(
@@ -297,6 +310,10 @@ void WorkloadNode::makeReceiveRequest(packsim::Message* FOLLY_NONNULL msg) {
 }
 
 void WorkloadNode::onMessageReceived(packsim::Message* msg) {
+  // Counted before resolveReceived, which can map the message to another one
+  // or hold it back, so that the run check sees every message a transport
+  // completed in error.
+  countIfCompletedInError(*simCtx_, *msg);
   msg = resolveReceived(msg);
   if (msg == nullptr) {
     return;
@@ -309,6 +326,7 @@ void WorkloadNode::onMessageReceived(packsim::Message* msg) {
 
   const auto it = workloads_.find(msg->workloadId);
   if (it != workloads_.end()) {
+    it->second->recordCompletionStatus(*msg);
     it->second->requestReceived(msg);
   } else if (onMessageReceived_) {
     // Optional because nothing subscribes at all: no caller outside tests
@@ -325,6 +343,8 @@ void WorkloadNode::onMessageReceived(packsim::Message* msg) {
 }
 
 void WorkloadNode::onMessageAcked(packsim::Message* msg) {
+  // Counted before resolveAcked, for the reason onMessageReceived gives.
+  countIfCompletedInError(*simCtx_, *msg);
   msg = resolveAcked(msg);
   if (msg == nullptr) {
     return;
@@ -332,6 +352,7 @@ void WorkloadNode::onMessageAcked(packsim::Message* msg) {
 
   const auto it = workloads_.find(msg->workloadId);
   if (it != workloads_.end()) {
+    it->second->recordCompletionStatus(*msg);
     if (it->second->tryHandleTransportAck(msg)) {
       return;
     }

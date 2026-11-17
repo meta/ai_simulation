@@ -8,6 +8,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <utility>
 
 #include <folly/CppAttributes.h>
@@ -163,6 +164,11 @@ struct SimContext : public ::packsim::pdes::SimulationContext {
   Random random;
   std::atomic_uint_fast64_t dataRcvd{0};
   std::atomic_uint_fast64_t dataRcvdExpected{0};
+  // The messages that a transport completed in error, as
+  // Message::completedInError() reports, counted by this context's workload
+  // nodes for every completion a transport hands them. Only events of this
+  // context write it, and it is read after the run, so it is not atomic.
+  uint64_t messagesCompletedInError{0};
   Tracer tracer;
 
  private:

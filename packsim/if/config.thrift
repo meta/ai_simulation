@@ -215,7 +215,9 @@ struct Simulation {
   // @oss-disable
   // False to omit config from result struct to reduce size
   129: bool includeConfigInResults = true;
-  // If true, allow workloads to complete with missing or extra bytes without throwing
+  // If true, the end of the run logs a warning instead of throwing when a
+  // transport completed messages in error, when workload ranks did not
+  // complete, or when bytes are missing or extra.
   130: bool allowIncompleteWorkloads = false;
 
   // @oss-disable

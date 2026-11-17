@@ -89,6 +89,16 @@ class PackSimSimulation {
   void logProgress(const std::stop_token& stopToken);
   std::string getTraceEventsJson() const;
   void getWorkloadResults(packsim::thrift::SimulationResult& res) const;
+  /**
+   * Fail a run that one of verifySimulationMetrics()'s checks rejects, or
+   * only log a warning when allowIncompleteWorkloads is set.
+   *
+   * @param msg  What the check found, e.g. "2 messages completed in error".
+   *
+   * @throw std::runtime_error with `msg` unless allowIncompleteWorkloads is
+   *        set.
+   */
+  void failUnlessIncompleteWorkloadsAllowed(const std::string& msg) const;
   Random random_;
   packsim::thrift::Simulation* simCfg_;
   Scheduler scheduler_;

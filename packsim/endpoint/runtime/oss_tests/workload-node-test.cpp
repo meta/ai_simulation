@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include <folly/CppAttributes.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -286,6 +287,12 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
       setOnRequestAckedCallback([this](Message* msg) {
         ++fallbackCount;
         fallbackMessage = msg;
+        fallbackResultInError = resultInError();
+      });
+      setOnRequestReceivedCallback([this](Message* msg) {
+        ++receivedCount;
+        receivedMessage = msg;
+        receivedResultInError = resultInError();
       });
     }
 
@@ -294,6 +301,7 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
     bool tryHandleTransportAck(Message* msg) override {
       ++tryHandleCount;
       tryHandleMessage = msg;
+      tryHandleResultInError = resultInError();
       return disposition_ == AckDisposition::CONSUME;
     }
 
@@ -317,7 +325,29 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
     // Last Message delivered to the generic handler.
     Message* fallbackMessage{nullptr};
 
+    // Calls to the generic WorkloadRank receive handler.
+    uint32_t receivedCount{0};
+
+    // Last Message delivered to the generic receive handler.
+    Message* receivedMessage{nullptr};
+
+    // The rank's messagesCompletedInError result when the rank-specific ACK
+    // handler last ran: what the rank reports if that handler completes it.
+    uint64_t tryHandleResultInError{0};
+
+    // The same when the generic ACK handler last ran.
+    uint64_t fallbackResultInError{0};
+
+    // The same when the generic receive handler last ran.
+    uint64_t receivedResultInError{0};
+
    private:
+    // The count in the result that onWorkloadComplete would take if the rank
+    // completed at this point.
+    uint64_t resultInError() const {
+      return *getThriftResult().messagesCompletedInError();
+    }
+
     const AckDisposition disposition_;
   };
 
@@ -377,6 +407,137 @@ TEST_F(WorkloadNodeAckRoutingTest, UnclaimedAckFallsThroughToGenericHandler) {
   EXPECT_EQ(rank->tryHandleMessage, &msg);
   EXPECT_EQ(rank->fallbackCount, 1u);
   EXPECT_EQ(rank->fallbackMessage, &msg);
+}
+
+// The counts of messages completed in error reuse the ACK-routing fixture's
+// rank, which records what reaches each of its handlers.
+using WorkloadNodeCompletionStatusTest = WorkloadNodeAckRoutingTest;
+
+// A handler can complete the rank, which takes the rank's result at once, so
+// an acknowledgment completed in error is counted before any handler sees it.
+TEST_F(
+    WorkloadNodeCompletionStatusTest,
+    AnAckCompletedInErrorIsCountedAndStillDelivered) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank = installRank(*node, AckDisposition::FALL_THROUGH);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(simCtx_.messagesCompletedInError, 1u);
+  EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 1u);
+  EXPECT_EQ(rank->tryHandleResultInError, 1u);
+  EXPECT_EQ(rank->fallbackCount, 1u);
+  EXPECT_EQ(rank->fallbackMessage, &msg);
+  EXPECT_EQ(rank->fallbackResultInError, 1u);
+}
+
+// The same for a receive, which is counted before the receive handler sees it.
+TEST_F(
+    WorkloadNodeCompletionStatusTest,
+    AReceiveCompletedInErrorIsCountedAndStillDelivered) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank = installRank(*node, AckDisposition::FALL_THROUGH);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+
+  node->onMessageReceived(&msg);
+
+  EXPECT_EQ(simCtx_.messagesCompletedInError, 1u);
+  EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 1u);
+  EXPECT_EQ(rank->receivedCount, 1u);
+  EXPECT_EQ(rank->receivedMessage, &msg);
+  EXPECT_EQ(rank->receivedResultInError, 1u);
+}
+
+// A COMPLETE_FLUSHED message executed in full, so it is not an error.
+TEST_F(WorkloadNodeCompletionStatusTest, ACompleteFlushedAckIsNotCounted) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank = installRank(*node, AckDisposition::FALL_THROUGH);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.completionStatus = Message::CompletionStatus::COMPLETE_FLUSHED;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(rank->fallbackCount, 1u);
+  EXPECT_EQ(simCtx_.messagesCompletedInError, 0u);
+  EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 0u);
+}
+
+// The rank counts the message before its own handler can consume it, so the
+// count does not depend on which handler takes the message.
+TEST_F(
+    WorkloadNodeCompletionStatusTest,
+    AConsumedAckCompletedInErrorIsStillCounted) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank = installRank(*node, AckDisposition::CONSUME);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(rank->tryHandleCount, 1u);
+  EXPECT_EQ(rank->tryHandleResultInError, 1u);
+  EXPECT_EQ(rank->fallbackCount, 0u);
+  EXPECT_EQ(simCtx_.messagesCompletedInError, 1u);
+  EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 1u);
+}
+
+// A node whose resolve hooks hold back every completion, as a hook that waits
+// for the rest of a larger message does.
+class HoldingWorkloadNode final : public WorkloadNode {
+ public:
+  using WorkloadNode::WorkloadNode;
+
+ protected:
+  Message* FOLLY_NULLABLE
+  resolveReceived(Message* FOLLY_NONNULL /*msg*/) override {
+    return nullptr;
+  }
+
+  Message* FOLLY_NULLABLE
+  resolveAcked(Message* FOLLY_NONNULL /*msg*/) override {
+    return nullptr;
+  }
+};
+
+// The run check counts a completion before the resolve hooks, so it sees a
+// message a hook holds back, which the rank never sees.
+TEST_F(
+    WorkloadNodeCompletionStatusTest,
+    ACompletionAHookHoldsBackIsCountedForTheRunCheckOnly) {
+  const FlexNodeParams params{
+      .simCtx = &simCtx_,
+      .name = "holding_node",
+      .flexId = FlexDeviceId("1:0:1:1:0:0:0:0"),
+      .lpmTable = nullptr,
+      .topo = nullptr,
+  };
+  HoldingWorkloadNode node(params, createNodeConfig(), nicMap_);
+  auto* rank = installRank(node, AckDisposition::FALL_THROUGH);
+  Message received;
+  received.workloadId = kWorkloadId;
+  received.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+  Message acked;
+  acked.workloadId = kWorkloadId;
+  acked.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+
+  node.onMessageReceived(&received);
+  node.onMessageAcked(&acked);
+
+  EXPECT_EQ(simCtx_.messagesCompletedInError, 2u);
+  EXPECT_EQ(rank->receivedCount, 0u);
+  EXPECT_EQ(rank->tryHandleCount, 0u);
+  EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 0u);
 }
 
 TEST_F(

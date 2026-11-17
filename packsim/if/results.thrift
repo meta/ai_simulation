@@ -54,6 +54,16 @@ struct PerRankWorkloadResult {
   4: uint32 rank = 0;
   5: string name = "";
   6: uint32 iteration = 0;
+  // The messages completed in error that reached this rank's handlers before
+  // the rank completed: each one that failed and each one flushed before it
+  // executed in full. COMPLETE_FLUSHED, the status of a message flushed after
+  // it executed in full, is not counted. A completion that a workload node's
+  // resolve hook holds back or folds into another message, or that comes after
+  // the rank completed, counts only in the check at the end of the run, and a
+  // rank that never completes has no PerRankWorkloadResult, so these counts can
+  // sum to less than the count that check reports. 0 for a transport without
+  // error completions.
+  7: uint64 messagesCompletedInError = 0;
 }
 
 // Per-message result record. Each record captures one message's send/recv
@@ -102,6 +112,10 @@ struct WorkloadResult {
   // Per-message result records. Only populated when
   // config.enablePerMessageTracking = true.
   60: list<PerMessageResult> perMessageResults;
+
+  // The sum of perRank's messagesCompletedInError, over the ranks that
+  // completed.
+  61: uint64 messagesCompletedInError = 0;
 }
 
 // Use for repeated collectives results

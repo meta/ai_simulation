@@ -1023,6 +1023,12 @@ void WorkloadRank::requestAcked(Message* msg) {
   onRequestAcked(msg);
 }
 
+void WorkloadRank::recordCompletionStatus(const Message& msg) noexcept {
+  if (msg.completedInError()) {
+    ++messagesCompletedInError_;
+  }
+}
+
 void WorkloadRank::setOnRequestAckedCallback(
     const WorkloadRankParams::OnRequestAckedCallback& cb) {
   onRequestAcked_ = cb;

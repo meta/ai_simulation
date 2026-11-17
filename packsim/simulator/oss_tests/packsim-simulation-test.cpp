@@ -31,13 +31,16 @@
 #include "packsim/endpoint/runtime/dependency-tracker.h"
 #include "packsim/endpoint/runtime/workload-node.h"
 #include "packsim/if/gen-cpp2/config_types.h"
+#include "packsim/if/gen-cpp2/results_types.h"
 #include "packsim/if/gen-cpp2/workload_types.h"
 #include "packsim/kernel/random.h"
 #include "packsim/kernel/sim-context.h"
 #include "packsim/kernel/time.h"
 #include "packsim/simulator/packsim-simulation.h"
 #include "packsim/topology/flex-topology.h"
+#include "packsim/transport/transport.h"
 #include "packsim/util/builders.h"
+#include "packsim/workloads/rank/workload-rank.h"
 
 DECLARE_uint64(packsim_max_wall_time_sec);
 DECLARE_uint64(packsim_report_interval_sec);
@@ -404,6 +407,135 @@ TEST(PackSimSimulationTest, TestIncompleteWorkloadsThrow) {
       [&]() { sim.verifySimulationMetrics(); },
       ThrowsMessage<std::runtime_error>(
           HasSubstr("128 workload ranks didn't complete")));
+}
+
+// Messages completed in error fail the run even when every byte arrived, and
+// the check sums the counts of all contexts: each workload node has its own.
+TEST(
+    PackSimSimulationTest,
+    TestVerifySimulationMetricsMessagesInErrorNotAllowIncompleteWorkloads) {
+  auto simCfg = packsim::buildFourZoneClosConfig(2);
+  simCfg.allowIncompleteWorkloads() = false;
+  PackSimSimulation sim(&simCfg);
+  auto& simCtxs = sim.getFlexTopology()->simCtxs_;
+  ASSERT_GE(simCtxs.size(), 2u);
+  simCtxs.front()->dataRcvd = 1000;
+  simCtxs.front()->dataRcvdExpected = 1000;
+  simCtxs.front()->messagesCompletedInError = 1;
+  simCtxs.back()->messagesCompletedInError = 1;
+
+  EXPECT_THAT(
+      [&]() { sim.verifySimulationMetrics(); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("2 messages completed in error")));
+}
+
+TEST(
+    PackSimSimulationTest,
+    TestVerifySimulationMetricsMessagesInErrorAllowIncompleteWorkloads) {
+  auto simCfg = packsim::buildFourZoneClosConfig(2);
+  simCfg.allowIncompleteWorkloads() = true;
+  PackSimSimulation sim(&simCfg);
+  auto& simCtxs = sim.getFlexTopology()->simCtxs_;
+  ASSERT_FALSE(simCtxs.empty());
+  simCtxs[0]->dataRcvd = 1000;
+  simCtxs[0]->dataRcvdExpected = 1000;
+  simCtxs[0]->messagesCompletedInError = 2;
+
+  EXPECT_NO_THROW({ sim.verifySimulationMetrics(); });
+}
+
+// A message completed in error can leave bytes missing, so the error count,
+// which names the cause, is reported instead of the missing bytes.
+TEST(
+    PackSimSimulationTest,
+    TestVerifySimulationMetricsReportsMessagesInErrorBeforeMissingBytes) {
+  auto simCfg = packsim::buildFourZoneClosConfig(2);
+  simCfg.allowIncompleteWorkloads() = false;
+  PackSimSimulation sim(&simCfg);
+  auto& simCtxs = sim.getFlexTopology()->simCtxs_;
+  ASSERT_FALSE(simCtxs.empty());
+  simCtxs[0]->dataRcvd = 1000;
+  simCtxs[0]->dataRcvdExpected = 2000;
+  simCtxs[0]->messagesCompletedInError = 1;
+
+  EXPECT_THAT(
+      [&]() { sim.verifySimulationMetrics(); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("1 messages completed in error")));
+}
+
+// A message completed in error can leave its rank incomplete, so the error
+// count is reported instead of the incomplete ranks.
+TEST(
+    PackSimSimulationTest,
+    TestVerifySimulationMetricsReportsMessagesInErrorBeforeIncompleteRanks) {
+  Random random;
+  auto simCfg = packsim::buildFourZoneClosWorkloadSim(
+      random,
+      {
+          .workloadType = packsim::thrift::WorkloadType::ALL_TO_ALL,
+          .numAccel = 32,
+          .sizeBytes = 1024,
+          .numCopies = 1,
+          .unit = packsim::thrift::SchedulingUnit::ENDPOINT,
+          .method = packsim::thrift::SchedulingMethod::SEQUENTIAL,
+      });
+  simCfg.allowIncompleteWorkloads() = false;
+  PackSimSimulation sim(&simCfg);
+  auto& simCtxs = sim.getFlexTopology()->simCtxs_;
+  ASSERT_FALSE(simCtxs.empty());
+  ASSERT_FALSE(sim.isWorkloadComplete());
+  simCtxs[0]->messagesCompletedInError = 1;
+
+  EXPECT_THAT(
+      [&]() { sim.verifySimulationMetrics(); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("1 messages completed in error")));
+}
+
+// A rank's count reaches its per-rank result when the rank completes, and the
+// workload result sums the counts of its ranks.
+TEST(PackSimSimulationTest, TestWorkloadResultSumsPerRankMessagesInError) {
+  Random random;
+  auto simCfg = packsim::buildFourZoneClosWorkloadSim(
+      random,
+      {
+          .workloadType = packsim::thrift::WorkloadType::ALL_TO_ALL,
+          .numAccel = 32,
+          .sizeBytes = 1024,
+          .numCopies = 1,
+          .unit = packsim::thrift::SchedulingUnit::ENDPOINT,
+          .method = packsim::thrift::SchedulingMethod::SEQUENTIAL,
+      });
+  PackSimSimulation sim(&simCfg);
+  const auto& nodes = sim.getFlexTopology()->getAllWorkloadNodes();
+  ASSERT_GE(nodes.size(), 2u);
+  Message flushed;
+  flushed.completionStatus = Message::CompletionStatus::FLUSHED_IN_ERROR;
+  // The rank of node i counts i + 1 messages, then completes.
+  std::map<uint32_t, uint64_t> expectedPerRank;
+  for (uint64_t i = 0; i < 2; ++i) {
+    const auto ranks = nodes[i]->getWorkloads();
+    ASSERT_EQ(ranks.size(), 1u);
+    WorkloadRank& rank = *ranks.front();
+    for (uint64_t n = 0; n <= i; ++n) {
+      rank.recordCompletionStatus(flushed);
+    }
+    nodes[i]->onWorkloadComplete(rank.workloadId_, rank.rank_);
+    expectedPerRank[rank.rank_] = i + 1;
+  }
+
+  const auto result = sim.getThriftResult();
+
+  ASSERT_EQ(result.workloads()->size(), 1u);
+  const auto& workload = result.workloads()->begin()->second;
+  std::map<uint32_t, uint64_t> perRank;
+  for (const auto& [rank, rankResult] : *workload.perRank()) {
+    perRank[rank] = *rankResult.messagesCompletedInError();
+  }
+  EXPECT_EQ(perRank, expectedPerRank);
+  EXPECT_EQ(*workload.messagesCompletedInError(), 3u);
 }
 
 // The progress thread must not hold up the end of a run: with a report
