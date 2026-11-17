@@ -52,9 +52,13 @@ struct Message { // @oss-enable
     // The message's queue entered the error state before the message was
     // fully executed, or the message was posted to a queue already in error.
     FLUSHED_IN_ERROR,
-    // The receiver refused the message for want of a posted receive after the
-    // last retry the transport allows.
+    // The receiver refused the message for want of a posted receive, and the
+    // transport gave up on it after the last retry it allows, or when its
+    // timeout ran out while the message waited for a receive.
     RNR_RETRY_EXCEEDED,
+    // The transport made no forward progress on the message's queue pair for
+    // as long as its timeout and retry count allow.
+    RETRY_EXCEEDED,
   };
 
   uint32_t srcRank{};
