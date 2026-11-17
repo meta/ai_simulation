@@ -71,6 +71,9 @@ struct Message { // @oss-enable
     // The responder answered the message with a status that the transport
     // does not recognize, which it treats as an error.
     BAD_RESPONSE,
+    // The message is a receive, and the message that arrived for it was
+    // longer than the receive or had a packet past its own last packet.
+    LOCAL_LENGTH_ERROR,
   };
 
   uint32_t srcRank{};
