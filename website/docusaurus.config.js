@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const repoUrl = 'https://github.com/facebook/ai_simulation';
+const repoUrl = 'https://github.com/meta/ai_simulation';
 const repoRoot = path.resolve(__dirname, '..');
 const docsDir = path.join(repoRoot, 'packsim');
 // The pages are PackSim's own Markdown files, rendered where they live, so the
@@ -97,9 +97,9 @@ function linkFilesToGitHub() {
 module.exports = {
   title: 'PackSim',
   tagline: 'A packet-level, discrete-event simulator for AI training fabrics',
-  url: 'https://facebook.github.io',
+  url: 'https://meta.github.io',
   baseUrl: '/ai_simulation/',
-  organizationName: 'facebook',
+  organizationName: 'meta',
   projectName: 'ai_simulation',
   trailingSlash: false,
 

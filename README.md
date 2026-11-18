@@ -1,6 +1,6 @@
 # AI Simulation
 
-[![linux](https://github.com/facebook/ai_simulation/actions/workflows/getdeps_linux.yml/badge.svg)](https://github.com/facebook/ai_simulation/actions/workflows/getdeps_linux.yml)
+[![linux](https://github.com/meta/ai_simulation/actions/workflows/getdeps_linux.yml/badge.svg)](https://github.com/meta/ai_simulation/actions/workflows/getdeps_linux.yml)
 
 This repository holds tools Meta uses to simulate the backend networks that
 carry AI training and inference traffic. Training a large model is bounded as

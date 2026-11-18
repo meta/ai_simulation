@@ -4,7 +4,7 @@ directory inside Meta's internal monorepo, and changes flow one way. A pull
 request here is never merged. If we take the change, a Meta engineer applies it
 internally, where it goes through the same review as any other change, and it
 reaches GitHub on the following export — with you credited in the commit
-message. [CONTRIBUTING.md](https://github.com/facebook/ai_simulation/blob/main/CONTRIBUTING.md)
+message. [CONTRIBUTING.md](https://github.com/meta/ai_simulation/blob/main/CONTRIBUTING.md)
 explains why.
 
 That round trip is also why, for anything larger than a bug fix, we would rather

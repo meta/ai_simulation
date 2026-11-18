@@ -75,10 +75,10 @@ jobs:
           path: website/build
 
   deploy:
-    # Only from main in facebook/ai_simulation, and only while the repository
+    # Only from main in meta/ai_simulation, and only while the repository
     # is public, so nothing is published before it is.
     if: >-
-      github.repository == 'facebook/ai_simulation' &&
+      github.repository == 'meta/ai_simulation' &&
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
       github.event.repository.visibility == 'public'

@@ -108,6 +108,11 @@ on `main` has the detail.
   workload whose first NIC pair is not (0, 0), such as one whose `qpTemplates`
   leave out NIC 0, sent its data on the wrong NICs. A workload whose first NIC
   pair is (0, 0) runs as before.
+- The documentation site deploys again. The repository's GitHub organisation
+  was renamed from `facebook` to `meta`, and the deploy job ran only in
+  `facebook/ai_simulation`. The job, the site's configuration and the
+  repository's links now name `meta/ai_simulation`, and the site's host
+  `https://meta.github.io`.
 
 ### Changed
 
@@ -128,4 +133,4 @@ on `main` has the detail.
   marks: a CE mark added downstream, or a TTL mark a downstream hop-limit
   decrement cleared.
 
-[Unreleased]: https://github.com/facebook/ai_simulation/commits/main
+[Unreleased]: https://github.com/meta/ai_simulation/commits/main
