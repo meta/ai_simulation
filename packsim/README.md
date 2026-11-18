@@ -147,16 +147,17 @@ You need Linux, Python 3.10 or newer, git, CMake 3.24 or newer (fbthrift's
 minimum), and GCC 11 or newer or Clang 16 or newer; getdeps provides the rest.
 
 These are the install, build and test commands CI runs on Ubuntu, after a
-`sudo apt-get update`:
+`sudo apt-get update`, plus `--build-dir=_build`, which CI leaves out (see
+below):
 
 ```sh
 # Install the distribution packages getdeps may use instead of building them.
 sudo python3 build/fbcode_builder/getdeps.py --allow-system-packages \
   install-system-deps --recursive packsim
 python3 build/fbcode_builder/getdeps.py --allow-system-packages \
-  build --src-dir=. packsim
+  build --src-dir=. --build-dir=_build packsim
 python3 build/fbcode_builder/getdeps.py --allow-system-packages \
-  test --src-dir=. packsim
+  test --src-dir=. --build-dir=_build packsim
 ```
 
 On Debian and Ubuntu, `install-system-deps` installs the packages with
@@ -172,8 +173,11 @@ well, passes `--project-install-prefix packsim:/usr/local` (and
 `--build-type RelWithDebInfo`, the default) to both `build` and `test`, and runs
 `fixup-dyn-deps` between them.
 
-Pass the same flags to every command: getdeps derives the build directory from
-them, so a `test` with different flags looks for a build that does not exist.
+Pass the same flags to every command: getdeps derives its install directory
+from all of them but `--build-dir` and looks for the build there, so a `test`
+with different flags looks for a build that does not exist. Give `test` the
+same `--build-dir` as `build` too: without it, `test` looks for the build tree
+in getdeps' scratch directory instead of `_build`.
 Leaving out `--allow-system-packages` makes getdeps build more of the
 dependencies from source, which is slower, but not all of them: on Linux it
 always uses the system OpenSSL (`build/fbcode_builder/manifests/openssl`), so
@@ -182,18 +186,29 @@ quietly after the install step; when a build command fails, it ends with
 `!! Failed`.
 
 getdeps keeps everything it downloads and builds — about 13 GB for this build
-and its tests — under `$TMPDIR`, or `/tmp` when that is unset. Where `/tmp` is
-a RAM-backed tmpfs capped at half of memory, as on Fedora, Arch, Debian 13 and
-Ubuntu 25.10 and later, a machine with less than 32 GB of RAM runs out of space
-partway through. Put it on disk instead: export `TMPDIR` before the first
-command, or add the same `--scratch-path <dir>` to every command except the
-`sudo` one, which would create `<dir>` owned by root.
+and its tests — in a scratch directory under `$TMPDIR`, or `/tmp` when that is
+unset, apart from PackSim's own build tree, a few gigabytes of that, which
+`--build-dir=_build` puts in `_build`. On a machine with a `mkscratch` command,
+getdeps asks it for the scratch directory instead; `getdeps.py show-scratch-dir`
+prints the directory either way. Where `/tmp` is a RAM-backed tmpfs capped at
+half of memory, as on Fedora, Arch, Debian 13 and Ubuntu 25.10 and later, a
+machine with less than 32 GB of RAM can run out of space partway through. Put
+it on disk instead: export `TMPDIR` before the first command, or add the same
+`--scratch-path <dir>` to every command except the `sudo` one, which would
+create `<dir>` owned by root.
 
 getdeps sizes its parallelism from the host's memory and cores. Inside a
 container with a lower memory limit, add `--num-jobs N` to the same commands,
 with about one job for every 3 GB the container may use.
 
-The installed `packsim` and `packsim-replay` are in the bin subdirectory of the
+`--build-dir=_build` makes getdeps build PackSim in `_build`, the build
+directory of the plain CMake build below, so the executables end up at
+`_build/packsim` and `_build/packsim-replay` whichever way you build. Without
+it, getdeps builds PackSim in its scratch directory too, under a name that
+carries a hash of its flags. The two builds share `_build`: every getdeps
+`build` reconfigures it with getdeps' own settings, so delete `_build` before
+going back to a plain CMake build against dependencies you installed yourself.
+getdeps also installs the two executables, in the bin subdirectory of the
 directory this prints:
 
 ```sh
@@ -261,10 +276,11 @@ configure with
 those four and `ctest --test-dir _build -LE heavy` everything else. With
 getdeps, pass
 `--extra-cmake-defines '{"PACKSIM_HEAVY_TESTS": "ON"}'` to both `build` and
-`test`: getdeps derives the build directory from its flags, so a `test` without
-the define looks for a build that does not exist. getdeps also folds the define
-into every dependency's build hash, and passes it to each one it builds with
-CMake, so it builds them all again, folly and fbthrift included.
+`test`: getdeps derives its install directory from its flags and looks for the
+build there, so a `test` without the define looks for a build that does not
+exist. getdeps also folds the define into every dependency's build hash, and
+passes it to each one it builds with CMake, so it builds them all again, folly
+and fbthrift included.
 
 ### Continuous integration
 
@@ -313,9 +329,8 @@ by default).
 
 `packsim` takes a simulation config, a serialized `Simulation` struct (defined
 in `if/config.thrift`), and writes a `SimulationResult` (`if/results.thrift`).
-A getdeps build installs `packsim` and `packsim-replay` in the bin subdirectory
-of the directory `show-inst-dir` prints. A plain CMake build leaves the
-executables at the top of its build directory, so from the repository root:
+Both builds above leave the executables at the top of `_build`, so from the
+repository root:
 
 ```sh
 ./_build/packsim \
