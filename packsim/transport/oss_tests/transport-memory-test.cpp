@@ -26,8 +26,6 @@ namespace packsim {
 namespace {
 // Lookahead of the loopback simulations, 1 us, as in RoceTransportSimTest.
 constexpr uint64_t kLookaheadFs = 1'000'000'000;
-// One-way wire delay of the loopback.
-constexpr uint64_t kWireDelayNs = 100;
 // A message of 65 full packets, long enough that a slowly drained RX buffer
 // still holds most of it well after its first packets have arrived.
 constexpr uint32_t kMessageBytes = 4096 * 65;
@@ -74,6 +72,7 @@ class TransportMemoryTest : public RoceTransportSimTest {
     SimContext simCtx{&scheduler, "SimContext", 0, &conditionalMap};
     RoceTransportBase src(&simCtx, srcId_, &nicCfg);
     RoceTransportBase dst(&simCtx, dstId_, &nicCfg);
+    // The fixture's wire(), but on this simulation's own context.
     const auto wire = [&simCtx](RoceTransportBase& from, Transport& to) {
       return [&simCtx, &from, &to](const PacketPtr& pkt) {
         from.onPacketSent(pkt, nullptr);

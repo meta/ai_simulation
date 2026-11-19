@@ -32,6 +32,10 @@ struct RoceSendInfo {
   uint32_t psn{0};
   uint32_t sequenceNum{UINT32_MAX};
   bool callbackOnSend{false};
+  // Whether this packet carries its WRITE's destination (see
+  // Message::writeAddr), as the first packet of a WRITE that has one. Unlike
+  // isFirstPkt, it is not set again on the first packet of a later send chunk.
+  bool carriesWriteDest{false};
   uint32_t writeImmData{0};
   uint32_t sendOrWriteData{0};
 };

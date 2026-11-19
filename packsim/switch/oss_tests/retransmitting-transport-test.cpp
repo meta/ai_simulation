@@ -22,8 +22,8 @@ static_assert(!isAlwaysRetransmittingType(PacketType::ROCE));
 
 TEST(IsAlwaysRetransmittingType, TypesWithoutUnconditionalRetransmitExcluded) {
   // Every PacketType outside the always-retransmitting list belongs here. ROCE
-  // sits here because whether it retransmits depends on config, not on the
-  // type.
+  // and ROCE_WRITE sit here because whether they retransmit depends on config,
+  // not on the type.
   const std::vector<PacketType> notRetransmitting = {
       PacketType::RAW,
       PacketType::ETHERNET,
@@ -31,6 +31,7 @@ TEST(IsAlwaysRetransmittingType, TypesWithoutUnconditionalRetransmitExcluded) {
       PacketType::IPV6,
       PacketType::UDP,
       PacketType::ROCE,
+      PacketType::ROCE_WRITE,
       PacketType::PING,
       PacketType::ETHERNET_CC,
       PacketType::CTLOS,
@@ -51,6 +52,14 @@ TEST(IsRetransmittingTransport, RoceWithLossRecoveryIsRecoverable) {
   EXPECT_TRUE(isRetransmittingTransport(pkt))
       << "a RoCEv2 QP configured with goBackN will retransmit a lost packet, "
          "so dropping it is recoverable";
+}
+
+TEST(IsRetransmittingTransport, RoceWritePacketWithLossRecoveryIsRecoverable) {
+  RoceWritePacket pkt;
+  pkt.lossRecoveryEnabled = true;
+  EXPECT_TRUE(isRetransmittingTransport(pkt))
+      << "a WRITE that carries a destination is resent like any other packet "
+         "of its RoCEv2 QP, so dropping one is recoverable";
 }
 
 TEST(IsRetransmittingTransport, RoceWithoutLossRecoveryIsUnrecoverable) {

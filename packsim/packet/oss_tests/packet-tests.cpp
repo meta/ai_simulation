@@ -371,6 +371,7 @@ void expectAgreesForEveryMappedBase() {
   expectAgreesWithDynamicCast<Ipv6Packet, Concrete>();
   expectAgreesWithDynamicCast<UdpPacket, Concrete>();
   expectAgreesWithDynamicCast<RocePacket, Concrete>();
+  expectAgreesWithDynamicCast<RoceWritePacket, Concrete>();
   expectAgreesWithDynamicCast<PingPacket, Concrete>();
 }
 
@@ -384,7 +385,15 @@ TEST(PacketTest, MatcherAgreesWithDynamicCast) {
   expectAgreesForEveryMappedBase<Ipv6Packet>();
   expectAgreesForEveryMappedBase<UdpPacket>();
   expectAgreesForEveryMappedBase<RocePacket>();
+  expectAgreesForEveryMappedBase<RoceWritePacket>();
   expectAgreesForEveryMappedBase<PingPacket>();
+}
+
+// Endpoint and EthernetPort address a RoCE packet by port, and a WRITE's
+// packets are RoCE packets too.
+TEST(PacketTest, RoceWritePacketsAreAddressedByPortLikeRocePackets) {
+  EXPECT_TRUE(usesPortLevelAddressing(PacketType::ROCE));
+  EXPECT_TRUE(usesPortLevelAddressing(PacketType::ROCE_WRITE));
 }
 
 TEST(PacketTest, CfUpdateFrameResetClearsThePayload) {

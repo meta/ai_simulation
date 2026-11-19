@@ -333,7 +333,11 @@ void WorkloadNode::onMessageReceived(packsim::Message* msg) {
     return;
   }
 
-  if (enablePerMessageTracking_) { // @oss-enable
+  // A WRITE a socket hands up (see Message::writeAddr) has no srcRank,
+  // connectionMessageId or iteration to key a receive record by.
+  const bool shouldRecordRecv =
+      enablePerMessageTracking_ && !msg->writeAddr.has_value();
+  if (shouldRecordRecv) { // @oss-enable
   // @oss-disable
     messageTracker_->recordRecv(msg, simCtx_->now().getNs());
   }

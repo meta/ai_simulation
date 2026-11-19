@@ -112,4 +112,45 @@ TEST(RocePacketReset, RestoresRoceFieldDefaults) {
   EXPECT_FALSE(pkt.dstNicPort.has_value());
 }
 
+TEST(RoceWritePacketReset, RestoresTheDestinationAndTheRoceFields) {
+  RoceWritePacket pkt;
+  pkt.psn = 5;
+  pkt.isWrite = true;
+  pkt.sendOrWriteData = 13;
+  pkt.dest = RoceWriteDest{.addr = 14, .workloadId = 15, .dstRank = 16};
+
+  pkt.reset();
+
+  EXPECT_EQ(pkt.psn, 0u);
+  EXPECT_FALSE(pkt.isWrite);
+  EXPECT_EQ(pkt.sendOrWriteData, 0u);
+  EXPECT_EQ(pkt.dest.addr, 0u);
+  EXPECT_EQ(pkt.dest.workloadId, 0u);
+  EXPECT_EQ(pkt.dest.dstRank, 0u);
+  EXPECT_EQ(pkt.pktType, PacketType::ROCE_WRITE);
+}
+
+// The destination is simulator state, not header bytes, so a WRITE's first
+// packet takes as long on the wire as any other RoCE packet of its payload.
+TEST(RoceWritePacket, IsAsLargeOnTheWireAsARocePacket) {
+  RocePacket rocePkt;
+  RoceWritePacket writePkt;
+  rocePkt.payloadSize = 100;
+  writePkt.payloadSize = 100;
+
+  EXPECT_EQ(writePkt.getSize(), rocePkt.getSize());
+}
+
+TEST(RoceWritePacketReset, KeepsTheSizeOfAResetRocePacket) {
+  RocePacket rocePkt;
+  RoceWritePacket writePkt;
+  rocePkt.payloadSize = 100;
+  writePkt.payloadSize = 100;
+
+  rocePkt.reset();
+  writePkt.reset();
+
+  EXPECT_EQ(writePkt.getSize(), rocePkt.getSize());
+}
+
 } // namespace packsim

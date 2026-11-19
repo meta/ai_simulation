@@ -195,6 +195,12 @@ void RoceSocketBase::send(Message* msg) {
     throw std::runtime_error(
         fmt::format("Exceeded maximum send queue depth of {}", *maxQpDepth));
   }
+  if (msg->isWrite && msg->writeAddr.has_value()) {
+    auto& dest = txWriteDests_[msg->sequenceNumber];
+    dest.addr = *msg->writeAddr;
+    dest.workloadId = msg->workloadId;
+    dest.dstRank = msg->dstRank;
+  }
   queuedMsgs_.emplace_back(msg);
   transport()->socketReady(this);
 }
@@ -242,6 +248,7 @@ std::tuple<bool, uint32_t> RoceSocketBase::sendBytes(uint32_t quota) {
   uint32_t sentBytes = 0;
   while (moreToSend) {
     auto msg = queuedMsgs_.front();
+    const bool startOfMsg = msgBytesSent_ == 0;
     const auto msgBytesRemain = msg->sizeBytes - msgBytesSent_;
     const uint32_t remainingQuota = quota - sentBytes;
     uint32_t sendSize;
@@ -267,14 +274,11 @@ std::tuple<bool, uint32_t> RoceSocketBase::sendBytes(uint32_t quota) {
         msg->sizeBytes,
         msgBytesRemain - sendSize);
     fetchDataAndSend(
+        *msg,
         sendSize,
-        msg->sequenceNumber,
-        endOfMsg,
-        !moreToSend,
-        msg->isWrite,
-        msg->isWriteImm,
-        msg->writeImmData,
-        msg->sendOrWriteData);
+        /*startOfMsg=*/startOfMsg,
+        /*endOfMsg=*/endOfMsg,
+        /*endOfQuotaChunk=*/!moreToSend);
   }
 
   // Consume DCQCN tokens for the bytes we sent.
@@ -286,19 +290,16 @@ std::tuple<bool, uint32_t> RoceSocketBase::sendBytes(uint32_t quota) {
 }
 
 void RoceSocketBase::fetchDataAndSend(
+    const Message& msg,
     const uint32_t bytes,
-    const uint32_t sequenceNum,
+    const bool startOfMsg,
     const bool endOfMsg,
-    const bool endOfQuotaChunk,
-    const bool isWrite,
-    const bool isWriteImm,
-    const uint32_t writeImmData,
-    const uint32_t sendOrWriteData) {
+    const bool endOfQuotaChunk) {
   XLOGF(
       DBG2,
       "Host {}, Sequence {}: send {} bytes to {}",
       transport()->id_.toString(),
-      sequenceNum,
+      msg.sequenceNumber,
       bytes,
       getDstId().toString());
   uint32_t bytesLeft = bytes;
@@ -315,13 +316,15 @@ void RoceSocketBase::fetchDataAndSend(
          .isLastPkt = isLastPkt && endOfMsg,
          .isAck = false,
          .isNack = false,
-         .isWriteImm = isWriteImm,
-         .isWrite = isWrite,
+         .isWriteImm = msg.isWriteImm,
+         .isWrite = msg.isWrite,
          .psn = txPsn_++,
-         .sequenceNum = sequenceNum,
+         .sequenceNum = msg.sequenceNumber,
          .callbackOnSend = isLastPkt && endOfQuotaChunk,
-         .writeImmData = writeImmData,
-         .sendOrWriteData = sendOrWriteData});
+         .carriesWriteDest = isFirstPkt && startOfMsg && msg.isWrite &&
+             msg.writeAddr.has_value(),
+         .writeImmData = msg.writeImmData,
+         .sendOrWriteData = msg.sendOrWriteData});
     scheduleSend(readDelay, info);
     isFirstPkt = false;
     bytesLeft -= pktSize;
@@ -407,7 +410,20 @@ void RoceSocketBase::createAndSendPkt(const SendInfo& info) {
   const uint32_t psn = info.isAck && errorRecovery_
       ? errorRecovery_->adjustAckPsn(info.psn, expectedPsn_)
       : info.psn;
-  auto pkt = createPacket<PacketType::ROCE>(info.packetSize);
+  // A resend of a WRITE's first packet scheduled before the WRITE's last ACK
+  // but built after it finds no destination and goes as a plain RocePacket:
+  // the receiver already has its bytes, so it drops the packet as a duplicate
+  // before looking for one.
+  const auto destIt = info.carriesWriteDest
+      ? txWriteDests_.find(info.sequenceNum)
+      : txWriteDests_.end();
+  PacketPtr pkt;
+  if (destIt != txWriteDests_.end()) {
+    pkt = createPacket<PacketType::ROCE_WRITE>(info.packetSize);
+    pkt.as<RoceWritePacket>()->dest = destIt->second;
+  } else {
+    pkt = createPacket<PacketType::ROCE>(info.packetSize);
+  }
   if (info.isWriteImm) {
     writeImmEncap(pkt, info);
   }
@@ -548,6 +564,7 @@ void RoceSocketBase::onPacketRcvd(const PacketPtr& pktPtr) {
   }
 
   if (pkt->isWrite) {
+    trackWritePacket(pktPtr);
     return;
   }
 
@@ -598,6 +615,43 @@ void RoceSocketBase::onPacketRcvd(const PacketPtr& pktPtr) {
 
   bytesReceivedPerMsg_.erase(receiveSeqNum);
   finalPacketToMsg_[pktPtr] = expMsg;
+}
+
+void RoceSocketBase::trackWritePacket(const PacketPtr& pktPtr) {
+  const RocePacket& pkt = *pktPtr.as<RocePacket>();
+  if (rxWrite_.has_value() && pkt.sequenceNum != rxWrite_->seqNum) {
+    throw std::runtime_error(
+        fmt::format(
+            "Node {} received a packet of WRITE {} before the last packet of WRITE {}",
+            transport()->id_.toString(),
+            pkt.sequenceNum,
+            rxWrite_->seqNum));
+  }
+  if (const auto* writePkt = pktPtr.tryAs<RoceWritePacket>()) {
+    rxWrite_ = RxWrite{.dest = writePkt->dest, .seqNum = pkt.sequenceNum};
+  }
+  if (!rxWrite_.has_value()) {
+    return;
+  }
+  rxWrite_->bytes += pkt.payloadSize;
+  if (pkt.isLastPkt()) {
+    finalPacketToWrite_[pktPtr] =
+        makeDeliveredWrite(*rxWrite_, pkt.sendOrWriteData);
+    rxWrite_.reset();
+  }
+}
+
+std::unique_ptr<Message> RoceSocketBase::makeDeliveredWrite(
+    const RxWrite& write,
+    const uint32_t sendOrWriteData) {
+  auto msg = std::make_unique<Message>();
+  msg->isWrite = true;
+  msg->writeAddr = write.dest.addr;
+  msg->sendOrWriteData = sendOrWriteData;
+  msg->sizeBytes = write.bytes;
+  msg->workloadId = write.dest.workloadId;
+  msg->dstRank = write.dest.dstRank;
+  return msg;
 }
 
 bool RoceSocketBase::isPsnOk(
@@ -812,6 +866,7 @@ void RoceSocketBase::completeAckedMessages(
     if (it == completedSendMsgs_.end()) {
       break;
     }
+    txWriteDests_.erase(it->first);
     onMessageAcked(it->second);
     ++nextSendCqeSequenceNum_;
     completedSendMsgs_.erase(it);
@@ -888,7 +943,14 @@ void RoceSocketBase::cnpRcvd() {
 }
 
 void RoceSocketBase::onPacketWrittenToMemory(const PacketPtr& pkt) {
-  {
+  if (const auto writeIt = finalPacketToWrite_.find(pkt);
+      writeIt != finalPacketToWrite_.end()) {
+    // A delivered WRITE consumed no receive, so it goes up at once, outside
+    // the receives' completion order, and lives only for that call.
+    const std::unique_ptr<Message> write = std::move(writeIt->second);
+    finalPacketToWrite_.erase(writeIt);
+    onMessageReceived(write.get());
+  } else {
     const auto it = finalPacketToMsg_.find(pkt);
     if (it == finalPacketToMsg_.end()) {
       return;

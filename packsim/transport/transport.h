@@ -128,6 +128,14 @@ struct Message { // @oss-enable
   uint32_t writeImmData{0};
   uint64_t dataPtr{0};
   uint32_t sendOrWriteData{0};
+  // Where a WRITE's data lands at its destination, e.g. 0x1000. Set only when
+  // the destination rank takes WRITEs from the network: a RoCE socket then
+  // hands the WRITE to the receiving workload as a message of its own, with
+  // isWrite, writeAddr, sendOrWriteData, sizeBytes (the WRITE's size),
+  // workloadId and dstRank set, once the WRITE's last packet is in memory. That
+  // message lives only for the onMessageReceived call. dataPtr may hold the
+  // same address; what writeAddr adds is being set only in that case.
+  std::optional<uint64_t> writeAddr;
 
   // Whether the transport completed this message in error: true for every
   // status but SUCCESS and COMPLETE_FLUSHED, whose message was fully executed.

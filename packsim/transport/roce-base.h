@@ -27,6 +27,7 @@
 #include "packsim/kernel/time.h"
 #include "packsim/nic/nic-rx-buffer.h"
 #include "packsim/packet/ptr/PacketPtr.h"
+#include "packsim/packet/roce.h"
 #include "packsim/transport/congestion-control.h"
 #include "packsim/transport/error-recovery.h"
 #include "packsim/transport/roce-constants.h"
@@ -37,7 +38,6 @@ namespace packsim {
 
 class RoceTransportBase;
 class EthernetPort;
-struct RocePacket;
 
 // Configuration for constructing a RoceTransportBase with the desired
 // error recovery and congestion control behavior.
@@ -123,15 +123,25 @@ class RoceSocketBase : public Socket,
       bool isAck = false,
       bool isNack = false,
       bool isCnp = false);
+  /**
+   * Send @p bytes of @p msg as packets of at most kMaxRdmaPayload bytes, each
+   * after reading its payload from memory. Every packet carries the message's
+   * sequence number and WRITE fields, and the first packet of a WRITE that has
+   * a Message::writeAddr also carries the WRITE's destination.
+   *
+   * @param msg              The message the bytes belong to.
+   * @param bytes            How many of its bytes to send.
+   * @param startOfMsg       Whether these are the message's first bytes.
+   * @param endOfMsg         Whether these are the message's last bytes.
+   * @param endOfQuotaChunk  Whether these end the quota being sent, so the
+   *                         last packet calls back once it is sent.
+   */
   virtual void fetchDataAndSend(
+      const Message& msg,
       uint32_t bytes,
-      uint32_t sequenceNum,
+      bool startOfMsg,
       bool endOfMsg,
-      bool endOfQuotaChunk,
-      bool isWrite = false,
-      bool isWriteImm = false,
-      uint32_t writeImmData = 0,
-      uint32_t sendOrWriteData = 0);
+      bool endOfQuotaChunk);
 
   virtual std::tuple<bool, uint32_t> sendBytes(uint32_t quota);
 
@@ -210,6 +220,44 @@ class RoceSocketBase : public Socket,
    * @param pkt  The received, CE-marked packet.
    */
   void countEcnRcvd(const RocePacket& pkt);
+
+  // A WRITE that carries a destination (see Message::writeAddr), while this
+  // socket receives its packets.
+  struct RxWrite {
+    // The destination the WRITE's first packet carried.
+    RoceWriteDest dest;
+    // The WRITE's RocePacket::sequenceNum; trackWritePacket rejects a packet
+    // with another one until the WRITE's last packet.
+    uint32_t seqNum{0};
+    // The payload of the WRITE's packets so far.
+    uint32_t bytes{0};
+  };
+
+  /**
+   * Follow a received WRITE packet. A WRITE that carries a destination brings
+   * it in its first packet only, so the socket keeps it from there, counts the
+   * payload of the WRITE's packets, and at the last one makes the message it
+   * hands up once that packet is in memory.
+   *
+   * @param pktPtr  The packet, which isPsnOk accepted.
+   *
+   * @throw std::runtime_error  The packet belongs to another WRITE than the
+   *                            one whose last packet is still to come.
+   */
+  void trackWritePacket(const PacketPtr& pktPtr);
+  /**
+   * Make the message this socket hands its workload for a WRITE that carries a
+   * destination.
+   *
+   * @param write            The WRITE, with the payload of all its packets.
+   * @param sendOrWriteData  The WRITE's sendOrWriteData, which every one of
+   *                         its packets carries.
+   *
+   * @return                 The message.
+   */
+  static std::unique_ptr<Message> makeDeliveredWrite(
+      const RxWrite& write,
+      uint32_t sendOrWriteData);
   /**
    * Check a received PSN and apply the resulting receive-path side effects
    * (deferred-ACK release, duplicate ACK, NACK request).
@@ -251,7 +299,21 @@ class RoceSocketBase : public Socket,
   std::list<Message*> expectedMsgs_;
   std::list<Message*> queuedMsgs_;
   std::list<Message*> sentMsgs_;
+  // The destination of each WRITE this socket sends that carries one (see
+  // Message::writeAddr), by sequence number, from when the WRITE is posted
+  // until it completes. The WRITE's first packet, each time it is built in
+  // that time, resends included, is a RoceWritePacket carrying it.
+  folly::F14FastMap<uint32_t, RoceWriteDest> txWriteDests_;
   uint32_t rxWritesReceived_{0};
+  // The WRITE that carries a destination whose packets this socket is
+  // receiving, from its first packet to its last. isPsnOk accepts only the
+  // next expected PSN, so a WRITE's packets arrive in order, one message at a
+  // time.
+  std::optional<RxWrite> rxWrite_;
+  // The message for each WRITE this socket hands its workload (see
+  // Message::writeAddr), by the WRITE's last packet, until that packet is in
+  // memory.
+  folly::F14FastMap<PacketPtr, std::unique_ptr<Message>> finalPacketToWrite_;
   folly::F14FastMap<PacketPtr, Message*> finalPacketToMsg_;
   uint32_t nextSendCqeSequenceNum_{0};
   uint32_t nextRecvCqeSequenceNum_{0};

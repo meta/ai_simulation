@@ -874,4 +874,31 @@ TEST_F(
   EXPECT_EQ(workloadNode->messageTracker(), nullptr);
 }
 
+// Two WRITEs to one rank, as a RoCE socket hands them up: each has only
+// workloadId and dstRank of the tracker's key, so recorded, the second would
+// collide with the first.
+TEST_F(
+    WorkloadNodeMessageTrackerTest,
+    AWriteTheSocketHandsUpIsNotRecordedAsReceived) {
+  packsim::thrift::NetworkLevelFeatureConfig featureConfig;
+  featureConfig.enablePerMessageTracking() = true;
+  auto workloadNode = createWorkloadNode(&featureConfig);
+  ASSERT_NE(workloadNode, nullptr);
+
+  for (int i = 0; i < 2; ++i) {
+    Message write;
+    write.isWrite = true;
+    write.writeAddr = 0x1000;
+    write.sendOrWriteData = 1;
+    write.sizeBytes = 2;
+    write.workloadId = 1;
+    write.dstRank = 20;
+    workloadNode->onMessageReceived(&write);
+  }
+
+  const auto* tracker = workloadNode->messageTracker();
+  ASSERT_NE(tracker, nullptr);
+  EXPECT_TRUE(tracker->getRecvTimes().empty());
+}
+
 } // namespace packsim

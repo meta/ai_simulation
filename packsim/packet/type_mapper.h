@@ -156,6 +156,15 @@ struct PacketEnumMapper<RocePacket> {
 };
 
 template <>
+struct PacketTypeMapper<PacketType::ROCE_WRITE> {
+  using type = RoceWritePacket;
+};
+template <>
+struct PacketEnumMapper<RoceWritePacket> {
+  static constexpr PacketType value = PacketType::ROCE_WRITE;
+};
+
+template <>
 struct PacketTypeMapper<PacketType::PING> {
   using type = PingPacket;
 };
@@ -244,11 +253,19 @@ struct PacketTypeMatcher<Ipv6Packet> {
 // the one type at or after `UDP` that derives from `Ipv6Packet` instead of
 // `UdpPacket`. Naming the exception rather than the last member also keeps
 // this correct in the open-source export, which strips the transport types
-// between `ROCE` and `PING` from the enum.
+// between `ROCE_WRITE` and `PING` from the enum.
 template <>
 struct PacketTypeMatcher<UdpPacket> {
   static constexpr bool matches(PacketType t) noexcept {
     return t >= PacketType::UDP && t != PacketType::PING;
+  }
+};
+
+// `RoceWritePacket` is the one type derived from `RocePacket`.
+template <>
+struct PacketTypeMatcher<RocePacket> {
+  static constexpr bool matches(PacketType t) noexcept {
+    return t == PacketType::ROCE || t == PacketType::ROCE_WRITE;
   }
 };
 

@@ -156,6 +156,39 @@ struct RocePacket : public UdpPacket {
   }
 };
 
+/**
+ * Where a RoCE WRITE's data lands at its destination, and the workload and rank
+ * the receiving socket hands the WRITE to (see Message::writeAddr).
+ */
+struct RoceWriteDest {
+  // The WRITE's Message::writeAddr, e.g. 0x1000.
+  uint64_t addr{0};
+  // The WRITE's Message::workloadId and Message::dstRank.
+  uint32_t workloadId{0};
+  uint32_t dstRank{0};
+};
+
+/**
+ * The first packet of a WRITE that carries a destination, that is, whose
+ * message has a Message::writeAddr. As with the RDMA Extended Transport Header
+ * (RETH) of RoCEv2, only a WRITE's first packet carries where the WRITE lands,
+ * and the receiving socket keeps it until the WRITE's last packet. Only these
+ * packets carry the destination, so it costs other RoCE packets nothing.
+ */
+struct RoceWritePacket : public RocePacket {
+  explicit RoceWritePacket() : RocePacket(PacketType::ROCE_WRITE, 0) {}
+  ~RoceWritePacket() override = default;
+
+  /** Reset packet to initial state. */
+  void reset() override {
+    RocePacket::reset();
+    dest = {};
+  }
+
+  // Where the WRITE lands and whom the receiving socket hands it to.
+  RoceWriteDest dest;
+};
+
 } // namespace packsim
 
 // fmt::formatter specialization for QPConnection

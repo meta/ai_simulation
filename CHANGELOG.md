@@ -70,6 +70,15 @@ on `main` has the detail.
   `Transport::setNicDatapath`. `Transport::shareNicDatapath` makes the
   transports of one NIC, such as the planes of a `PerPlaneTransport`, reserve
   the same datapath. With `SimpleNicDatapath`, results do not change.
+- `Message::writeAddr` in `packsim/transport/transport.h`: a RoCEv2 WRITE that
+  carries one is handed to the receiving workload, once its last packet is in
+  memory, as a message of its own with `isWrite`, `writeAddr`,
+  `sendOrWriteData`, `sizeBytes`, `workloadId` and `dstRank` set. Per-message
+  tracking does not record it as received. As with the RDMA Extended Transport
+  Header (RETH) of RoCEv2, only its first packet carries the address: a
+  `RoceWritePacket`, in `packsim/packet/roce.h`, of the new type
+  `PacketType::ROCE_WRITE`. `PacketPtr::is<RocePacket>()` matches it, and a
+  `pktType == PacketType::ROCE` test does not. Unset, nothing changes.
 
 ### Changed
 
@@ -103,6 +112,9 @@ on `main` has the detail.
   workload in a DAG still places at most one rank on a node, and a second
   collective barrier for it on one node is now rejected instead of replacing
   the first. A node that holds one rank of each workload behaves as before.
+- `RoceSocketBase::fetchDataAndSend` takes the `Message` instead of its
+  sequence number and WRITE fields, and whether the bytes start the message;
+  an override must change with it.
 
 ### Removed
 

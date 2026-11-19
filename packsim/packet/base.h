@@ -60,6 +60,9 @@ enum class PacketType : uint8_t {
   // above.
   UDP,
   ROCE,
+  // The first packet of a WRITE that carries a destination; see
+  // RoceWritePacket.
+  ROCE_WRITE,
   // @oss-disable
   // @oss-disable
   // @oss-disable
@@ -84,7 +87,7 @@ enum class PacketType : uint8_t {
  */
 [[nodiscard]] constexpr bool usesPortLevelAddressing(
     const PacketType type) noexcept {
-  if (type == PacketType::ROCE) {
+  if (type == PacketType::ROCE || type == PacketType::ROCE_WRITE) {
     return true;
   }
   // @oss-disable
