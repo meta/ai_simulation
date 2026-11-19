@@ -28,6 +28,7 @@
 #include "packsim/if/gen-cpp2/workload_types.h"
 // @oss-disable
 #include "packsim/workloads/builder.h"
+#include "packsim/workloads/dataflow.h"
 
 using packsim::workload::thrift::Workload;
 using packsim::workload::thrift::WorkloadSpecificConfig;
@@ -120,6 +121,7 @@ railConfigForWorkload(const Workload& w) {
     // @oss-disable
     // @oss-disable
     case WorkloadSpecificConfig::Type::compute:
+    case WorkloadSpecificConfig::Type::dataflow:
       break;
   }
   return std::nullopt;
@@ -664,6 +666,9 @@ std::vector<Workload> fixOneWorkload(Workload& w, Random& random) {
     case WorkloadSpecificConfig::Type::batch:
       fixOneBatchWorkload(w, random);
       break;
+    case WorkloadSpecificConfig::Type::dataflow:
+      DataflowRank::checkWorkload(w);
+      break;
     case WorkloadSpecificConfig::Type::__EMPTY__:
     case WorkloadSpecificConfig::Type::allToAll:
     case WorkloadSpecificConfig::Type::allReduce:
@@ -743,6 +748,13 @@ void buildQPNMap(std::vector<packsim::workload::thrift::Workload>& workloads) {
     const uint32_t numQPs = getNumQPs(wkld);
     // Other XPUs this XPU connects
     const auto rankPeers = getRankPeers(wkld);
+    // A Dataflow workload's operations name their channels: each rank pair
+    // gets one data QP for every channel up to the highest either rank uses,
+    // plus the notify QP.
+    const auto dataflowChannelCounts =
+        wkld.config()->getType() == WorkloadSpecificConfig::Type::dataflow
+        ? DataflowRank::getChannelCounts(wkld)
+        : std::vector<folly::F14FastMap<uint32_t, uint32_t>>{};
     std::unordered_set<std::tuple<uint32_t, uint32_t>> genPairs;
     for (uint32_t rank1 = 0; rank1 < rankPeers.size(); rank1++) {
       for (const auto rank2 : rankPeers[rank1]) {
@@ -757,7 +769,10 @@ void buildQPNMap(std::vector<packsim::workload::thrift::Workload>& workloads) {
         genPairs.emplace(pair);
         const auto& id1Vals = wkld.rankToId()->at(rank1);
         const auto& id2Vals = wkld.rankToId()->at(rank2);
-        for (uint32_t _i = 0; _i < numQPs; _i++) {
+        const uint32_t numPairQPs = dataflowChannelCounts.empty()
+            ? numQPs
+            : dataflowChannelCounts[rank1].at(rank2) + 1;
+        for (uint32_t _i = 0; _i < numPairQPs; _i++) {
           packsim::workload::thrift::QPNPair pair1, pair2;
           // Prefix increment to start from 1 on first visit to ID
           const uint32_t qpn1 = ++nextQpId[id1Vals];

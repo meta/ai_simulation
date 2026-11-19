@@ -7,7 +7,9 @@
 
 #include "packsim/workloads/builder.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -30,6 +32,7 @@
 #include "packsim/workloads/ar-ag-rs-ring.h"
 #include "packsim/workloads/batch.h"
 #include "packsim/workloads/compute.h"
+#include "packsim/workloads/dataflow.h"
 // @oss-disable
 #include "packsim/workloads/incast.h"
 #include "packsim/workloads/permutation-push-pull.h"
@@ -213,6 +216,20 @@ std::vector<std::vector<uint32_t>> genBatchPeers(
   return ret;
 }
 
+std::vector<std::vector<uint32_t>> genDataflowPeers(
+    const packsim::workload::thrift::Workload& w) {
+  const auto channelCounts = DataflowRank::getChannelCounts(w);
+  std::vector<std::vector<uint32_t>> peers(channelCounts.size());
+  for (size_t rank = 0; rank < channelCounts.size(); ++rank) {
+    peers[rank].reserve(channelCounts[rank].size());
+    for (const auto& [peer, _] : channelCounts[rank]) {
+      peers[rank].emplace_back(peer);
+    }
+    std::ranges::sort(peers[rank]);
+  }
+  return peers;
+}
+
 } // namespace
 
 std::unique_ptr<WorkloadRank> buildWorkloadRank(
@@ -319,6 +336,8 @@ std::unique_ptr<WorkloadRank> buildWorkloadRank(
       return std::make_unique<BatchRank>(params);
     case WorkloadSpecificConfig::Type::compute:
       return std::make_unique<ComputeRank>(params);
+    case WorkloadSpecificConfig::Type::dataflow:
+      return std::make_unique<DataflowRank>(params);
     // @oss-disable
       // @oss-disable
     case WorkloadSpecificConfig::Type::__EMPTY__:
@@ -355,6 +374,8 @@ std::vector<std::vector<uint32_t>> getRankPeers(
       return genBatchPeers(w);
     case WorkloadSpecificConfig::Type::compute:
       return {};
+    case WorkloadSpecificConfig::Type::dataflow:
+      return genDataflowPeers(w);
     // @oss-disable
       // @oss-disable
     case WorkloadSpecificConfig::Type::__EMPTY__:

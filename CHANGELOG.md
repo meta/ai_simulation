@@ -10,6 +10,13 @@ on `main` has the detail.
 
 ### Added
 
+- The `dataflow` workload in `packsim/if/workload.thrift`: each rank runs a
+  program of RECV, SEND, COMPUTE and JOIN operations in queues, and an
+  operation starts once the operations it depends on have completed. It
+  describes a collective algorithm message by message, with only the waits the
+  algorithm has. Ranks in symmetric positions share one program through peers
+  written relative to the rank. Each rank pair gets one queue pair for every
+  channel up to the highest its operations use.
 - `NicConfig.writeLatencyNs` in `packsim/if/nic_config.thrift`: the fixed
   latency of a NIC writing a received payload into its memory, for a transport
   that holds each received packet until its payload is written. Unset, nothing

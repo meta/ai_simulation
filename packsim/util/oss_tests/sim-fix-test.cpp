@@ -11,6 +11,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -835,6 +836,29 @@ TEST(FixOneWorkload, IncastIsNeitherFixedNorSplit) {
 
   const std::vector<packsim::workload::thrift::Workload> expected = {original};
   EXPECT_EQ(fixed, expected);
+}
+
+TEST(FixOneWorkload, DataflowWithASendWithoutARecvIsRejected) {
+  packsim::workload::thrift::DataflowOp send;
+  send.kind() = packsim::workload::thrift::DataflowOpKind::SEND;
+  send.peer() = 1;
+  send.sizeBytes() = 8;
+  packsim::workload::thrift::DataflowProgram sender;
+  sender.ops() = {send};
+  packsim::workload::thrift::Dataflow dataflow;
+  dataflow.programs() = {sender, packsim::workload::thrift::DataflowProgram{}};
+  dataflow.rankPrograms() = {0, 1};
+  packsim::workload::thrift::Workload workload;
+  workload.name() = "dataflow";
+  workload.numEndpoints() = 2;
+  workload.config()->dataflow() = std::move(dataflow);
+  Random random(/* seed= */ 0);
+
+  EXPECT_THAT(
+      [&]() { fixOneWorkload(workload, random); },
+      ThrowsMessage<std::invalid_argument>(HasSubstr(
+          "Workload dataflow: on channel 0 from rank 0 to rank 1, the number "
+          "of SENDs (1) differs from the number of RECVs (0)")));
 }
 
 TEST(FixOneWorkload, RankToIdKeysBelowNumEndpointsAreAccepted) {

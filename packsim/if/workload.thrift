@@ -305,6 +305,109 @@ struct Compute {
   3: uint64 sizeBytes = 0;
 }
 
+enum DataflowOpKind {
+  // The kind is not set. PackSim rejects an operation of this kind.
+  UNKNOWN = 0,
+  // Does nothing and completes as soon as it is issued: it joins dependencies.
+  JOIN = 1,
+  // Posts a receive of sizeBytes from peer on channel. Completes when the
+  // message has arrived.
+  RECV = 2,
+  // Sends sizeBytes to peer on channel. Completes when the peer's NIC
+  // acknowledges the message.
+  SEND = 3,
+  // Waits durationNs without using the network, e.g. for a reduction or a
+  // local copy.
+  COMPUTE = 4,
+}
+
+// Which earlier operations of its queue a DataflowOp waits for, besides its
+// deps.
+enum DataflowQueueWait {
+  NONE = 0,
+  // Every earlier operation of the queue has completed.
+  ALL = 1,
+  // Every earlier RECV of the queue has completed.
+  RECVS = 2,
+}
+
+// How a DataflowOp names its peer.
+enum DataflowPeerMode {
+  // peer is the peer's rank.
+  ABSOLUTE = 0,
+  // peer is an offset below numEndpoints: the peer is
+  // (rank + peer) mod numEndpoints.
+  RELATIVE = 1,
+  // peer is an offset below DataflowProgram.groupSize, inside the rank's group
+  // of groupSize consecutive ranks: the peer is
+  // base + (rank - base + peer) mod groupSize, where base is the rank rounded
+  // down to a multiple of groupSize.
+  GROUP_RELATIVE = 2,
+}
+
+// One operation of a DataflowProgram.
+struct DataflowOp {
+  1: DataflowOpKind kind;
+  // The queue that issues the operation, e.g. 0, below the number of
+  // operations in the program. A queue issues its operations in program order:
+  // an operation that cannot be issued yet holds back every later operation of
+  // its queue. Queues run concurrently. Queues that can issue at the same moment
+  // issue in ascending order at the start; after an operation completes, its
+  // own queue goes first, then the queues of the operations that depended on
+  // it, in program order.
+  2: uint32 queue = 0;
+  // Peer of a RECV or SEND, written as peerMode says. Not read for JOIN and
+  // COMPUTE.
+  3: uint32 peer = 0;
+  4: DataflowPeerMode peerMode = DataflowPeerMode.ABSOLUTE;
+  // Data queue pair of a RECV or SEND, below 2047: channel c is the c-th data
+  // queue pair of the rank pair, e.g. 0 for the first. On one rank, every SEND
+  // to one (peer, channel) belongs to one queue, and so does every RECV from
+  // one.
+  5: uint32 channel = 0;
+  // Bytes a RECV receives or a SEND sends, at least 1.
+  6: uint32 sizeBytes = 0;
+  // Time a COMPUTE takes, in nanoseconds.
+  7: uint64 durationNs = 0;
+  // Indices into DataflowProgram.ops of the operations that must complete
+  // before this one is issued. Each is below this operation's own index.
+  8: list<uint32> deps;
+  9: DataflowQueueWait queueWait = DataflowQueueWait.NONE;
+  // When true, the later operations of the queue are issued only after this
+  // one completes.
+  10: bool fence = false;
+}
+
+// The operations one rank runs. A staggered start
+// (Workload.maxStaggeredStartTimeNs and explicitStaggeredStartTimeNs) delays
+// every operation but RECV. The rank completes when every operation has
+// completed, and not before its staggered start.
+struct DataflowProgram {
+  1: list<DataflowOp> ops;
+  // Ranks in each group of GROUP_RELATIVE peers, e.g. 8 for racks of 8 ranks.
+  // It must divide Workload.numEndpoints. 0 when no operation uses
+  // GROUP_RELATIVE.
+  2: uint32 groupSize = 0;
+}
+
+// Ranks that each run a program of operations with explicit dependencies, e.g.
+// a collective whose sends wait only for the receives that they forward. A rank
+// learns about another rank only through messages: the k-th SEND a rank sends
+// to a (peer, channel) matches the k-th RECV the peer posts from it, moves as
+// many bytes, and must arrive after that RECV is posted. A workload whose SENDs
+// and RECVs on a channel differ in number or size is rejected. Each rank pair
+// gets one data queue pair per channel, up to the highest channel either rank
+// uses, plus the notify queue pair; qpTemplates may supply the queue pairs
+// instead, if both ranks of a pair list each channel's queue pair at the same
+// position. A Dataflow workload cannot set channelSettings or be a Batch child.
+struct Dataflow {
+  // The distinct programs. Ranks in symmetric positions share one through
+  // RELATIVE and GROUP_RELATIVE peers.
+  1: list<DataflowProgram> programs;
+  // Index into programs of each rank's program, one entry per rank.
+  2: list<uint32> rankPrograms;
+}
+
 // Ids reserved below are never reused for a different type. // @oss-enable
 @thrift.ReserveIds{ids = [7, 20, 21, 30]} // @oss-enable
 union WorkloadSpecificConfig {
@@ -320,6 +423,7 @@ union WorkloadSpecificConfig {
   // @oss-disable
   // @oss-disable
   40: Compute compute;
+  50: Dataflow dataflow;
 }
 
 struct QPNPair {

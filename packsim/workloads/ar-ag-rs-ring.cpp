@@ -104,6 +104,7 @@ void RingRank::initFromCollectiveConfig() {
     // @oss-disable
     // @oss-disable
     case WorkloadSpecificConfig::Type::compute:
+    case WorkloadSpecificConfig::Type::dataflow:
       break;
   }
   // Also reached by an arm added to WorkloadSpecificConfig without a case here.

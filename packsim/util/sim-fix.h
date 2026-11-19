@@ -27,7 +27,9 @@ namespace packsim {
  *
  * @throw std::invalid_argument  If a rankToId or rankToIdList key of `w`, or of
  *                               a batch child once it inherits w's rankToId,
- *                               is not below that workload's numEndpoints.
+ *                               is not below that workload's numEndpoints, or
+ *                               if a Dataflow workload fails
+ *                               DataflowRank::checkWorkload.
  * @throw std::runtime_error     If a rail-split workload (AllGather,
  *                               ReduceScatter or AllReduce, batch children
  *                               included) sets numRails to 0, or cannot be
@@ -44,7 +46,7 @@ std::vector<packsim::workload::thrift::Workload> fixOneWorkload(
     Random& random);
 
 /**
- * Returns the number of Queue Pairs (QPs) for a given workload.
+ * Returns the number of Queue Pairs (QPs) each rank pair of a workload gets.
  *
  * By default, returns 2 QPs (1 for data, 1 for notify). If the workload has
  * channelSettings configured, calculates the total as:
@@ -63,6 +65,11 @@ uint32_t getNumQPs(const packsim::workload::thrift::Workload& workload);
  *
  * For example, if workload 0 uses QPNs 1-32 on an endpoint, workload 1 will
  * start from QPN 33 on that same endpoint.
+ *
+ * Each rank pair gets getNumQPs(workload) QPs, except in a Dataflow workload:
+ * there a pair gets one QP for every channel up to the highest that either
+ * rank uses, as DataflowRank::getChannelCounts counts them, plus the notify
+ * QP.
  *
  * If a workload already has a non-empty qpnPairMap (e.g., supplied in the
  * input config), it is skipped and not overwritten.
