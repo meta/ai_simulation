@@ -548,6 +548,13 @@ struct ChannelSettings {
 struct WorkloadDag {
   // Dependencies between workloads in the DAG. Each workload can only
   // belong to one DAG globally. DAG must not contain any loops.
+  //
+  // A workload waits for a dependency only on the nodes the two share: its
+  // rank on a node waits for the dependency's rank on that node, if there is
+  // one, and then all its ranks start together. So a workload starts once
+  // each dependency has finished on every node they share. It does not wait
+  // for a dependency it shares no node with, and it must share a node with at
+  // least one of the workloads it depends on.
   1: map<
     string /* workload name */,
     set<string/* preceding workload name */ >

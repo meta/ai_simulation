@@ -34,7 +34,8 @@ class DependencyInfoBuilder {
    *
    * @throw         std::invalid_argument if a DAG references a workload name
    * absent from the input workloads, a workload ID appears in more than one
-   * DAG, or a DAG has a dependency cycle.
+   * DAG, a DAG has a dependency cycle, or a workload shares no node with any
+   * workload it depends on.
    */
   static std::unique_ptr<DependencyInfos> build(
       const packsim::thrift::Simulation& simCfg);

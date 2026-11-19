@@ -264,7 +264,8 @@ class WorkloadNode : public FlexNode {
 
   /**
    * Start the workloads on this node if they have no DAG dependencies or if
-   * they are not part of any DAGs.
+   * they are not part of any DAGs, and trigger the DAG workloads whose
+   * dependencies all run on other nodes.
    * NOTE: This should be only called once at the beginning of the simulation.
    */
   void startWorkloads();

@@ -7,6 +7,7 @@
 
 #include "packsim/endpoint/runtime/dependency-info-builder.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -23,6 +24,7 @@
 
 #include "packsim/if/gen-cpp2/config_types.h"
 #include "packsim/if/gen-cpp2/workload_types.h"
+#include "packsim/kernel/device-id.h"
 
 namespace packsim {
 
@@ -68,7 +70,8 @@ class DagWalker {
     }
     depInfos_.minIterationsPerDag =
         schedule_.minIterationsPerDag().to_optional();
-    buildOriginalToInternalNames();
+    buildWorkloadNameMaps();
+    buildNodesByWorkloadId();
     depInfos_.dagList.reserve(workloadDags->size());
     uint32_t dagId = 0;
     for (const auto& workloadDag : *workloadDags) {
@@ -79,12 +82,16 @@ class DagWalker {
 
  private:
   // Map each original (user-facing) workload name to the internal workload
-  // names it expands to (e.g. per-rail sub-workloads).
-  void buildOriginalToInternalNames() {
+  // names it expands to (e.g. per-rail sub-workloads), and each internal
+  // workload ID back to its original name.
+  void buildWorkloadNameMaps() {
     for (const auto& [internalName, originalInfo] :
          *schedule_.workloadNameInfos()) {
       originalToInternalNames_[*originalInfo.originalWorkloadName()].emplace(
           internalName);
+      originalNameByWorkloadId_.emplace(
+          *originalInfo.internalWorkloadId(),
+          *originalInfo.originalWorkloadName());
     }
   }
 
@@ -102,6 +109,38 @@ class DagWalker {
   uint32_t internalWorkloadId(const std::string& internalName) const {
     const auto& nameInfos = *schedule_.workloadNameInfos();
     return *nameInfos.at(internalName).internalWorkloadId();
+  }
+
+  // Record the nodes each scheduled workload places its ranks on.
+  void buildNodesByWorkloadId() {
+    for (const auto& workload : *schedule_.workloads()) {
+      auto& nodes = nodesByWorkloadId_[*workload.workloadId()];
+      for (const auto& [_, nodeId] : *workload.rankToId()) {
+        nodes.emplace(nodeId);
+      }
+    }
+  }
+
+  /**
+   * Whether two workloads place ranks on a common node. A workload without
+   * ranks counts as sharing one, since the simulation rejects it before the
+   * run starts.
+   *
+   * @param workloadId       Internal ID of one workload.
+   * @param otherWorkloadId  Internal ID of the other workload.
+   *
+   * @return                 True if a node holds a rank of each.
+   */
+  bool shareANode(uint32_t workloadId, uint32_t otherWorkloadId) const {
+    const auto nodes = nodesByWorkloadId_.find(workloadId);
+    const auto otherNodes = nodesByWorkloadId_.find(otherWorkloadId);
+    if (nodes == nodesByWorkloadId_.end() || nodes->second.empty() ||
+        otherNodes == nodesByWorkloadId_.end() || otherNodes->second.empty()) {
+      return true;
+    }
+    return std::ranges::any_of(nodes->second, [&otherNodes](const auto& node) {
+      return otherNodes->second.contains(node);
+    });
   }
 
   // Record a dependency edge (dependency -> dependent) for every internal
@@ -224,6 +263,50 @@ class DagWalker {
             folly::join(", ", blockedNames)));
   }
 
+  /**
+   * Checks that every workload of a DAG that has dependencies shares a node
+   * with at least one of them. A workload waits for a dependency only on the
+   * nodes the two share, so one that shares no node with any of its
+   * dependencies would wait for none of them.
+   *
+   * @param dagInfos  The DAG, with its edges already recorded in depInfos_.
+   * @param dagId     The DAG's index in dagList, for the error message.
+   *
+   * @throw           std::invalid_argument naming every such workload, by the
+   *                  name the DAG was written with.
+   */
+  void checkWorkloadsShareANodeWithADependency(
+      const DependencyDagInfos& dagInfos,
+      uint32_t dagId) const {
+    // A std::set keeps the names sorted, so the message is the same on every
+    // run.
+    std::set<std::string> isolatedWorkloads;
+    for (const auto workloadId : dagInfos.allWorkloadIds) {
+      const auto dependencies =
+          depInfos_.workloadIdDependencies.find(workloadId);
+      if (dependencies == depInfos_.workloadIdDependencies.end() ||
+          dependencies->second.empty()) {
+        continue;
+      }
+      if (std::ranges::none_of(
+              dependencies->second, [&](const uint32_t dependencyId) {
+                return shareANode(workloadId, dependencyId);
+              })) {
+        isolatedWorkloads.emplace(originalNameByWorkloadId_.at(workloadId));
+      }
+    }
+    if (isolatedWorkloads.empty()) {
+      return;
+    }
+    throw std::invalid_argument(
+        fmt::format(
+            "Workload DAG {} has workloads that share no node with any "
+            "workload they depend on: {}. A workload waits for a dependency "
+            "only on the nodes the two share, so these would wait for none.",
+            dagId,
+            folly::join(", ", isolatedWorkloads)));
+  }
+
   // `dagId` must equal the index this DAG gets in `dagList`.
   void processDag(
       const packsim::workload::thrift::WorkloadDag& workloadDag,
@@ -234,13 +317,22 @@ class DagWalker {
       processWorkload(workloadName, dependencyNames, dagInfos);
     }
     checkAcyclic(dagInfos, dagId);
+    checkWorkloadsShareANodeWithADependency(dagInfos, dagId);
     finalizeDag(dagInfos, dagId);
   }
 
   const packsim::thrift::WorkloadNewSchedule& schedule_;
   folly::F14FastMap<std::string, folly::F14FastSet<std::string>>
       originalToInternalNames_;
+  // The original (user-facing) name of each internal workload, by internal
+  // workload ID, which error messages name a workload by.
+  folly::F14FastMap<uint32_t, std::string> originalNameByWorkloadId_;
   folly::F14FastSet<uint32_t> observedWorkloadIds_;
+  // The nodes of each scheduled workload's ranks, by internal workload ID. A
+  // FlexDeviceId, as the simulation finds a rank's node by, pads a short node
+  // ID with zeros, so IDs that differ only by trailing zeros name one node.
+  folly::F14FastMap<uint32_t, folly::F14FastSet<FlexDeviceId>>
+      nodesByWorkloadId_;
   DependencyInfos depInfos_;
 };
 

@@ -42,6 +42,33 @@ void addWorkload(
   addInternalWorkload(schedule, name, name, id);
 }
 
+// Registers internal workload `internalName`, an expansion of `originalName`,
+// with internal id `id`, placing rank r on the node with ID nodeIds[r].
+void addScheduledInternalWorkload(
+    packsim::thrift::WorkloadNewSchedule& schedule,
+    const std::string& internalName,
+    const std::string& originalName,
+    uint32_t id,
+    const std::vector<uint32_t>& nodeIds) {
+  addInternalWorkload(schedule, internalName, originalName, id);
+  auto& workload = schedule.workloads()->emplace_back();
+  workload.name() = internalName;
+  workload.workloadId() = id;
+  for (uint32_t rank = 0; rank < nodeIds.size(); ++rank) {
+    (*workload.rankToId())[rank] = {nodeIds.at(rank)};
+  }
+}
+
+// Registers workload `name` with internal id `id`, placing rank r on the node
+// with ID nodeIds[r].
+void addScheduledWorkload(
+    packsim::thrift::WorkloadNewSchedule& schedule,
+    const std::string& name,
+    uint32_t id,
+    const std::vector<uint32_t>& nodeIds) {
+  addScheduledInternalWorkload(schedule, name, name, id, nodeIds);
+}
+
 // Builds a WorkloadDag from a {workloadName -> dependencyNames} mapping.
 packsim::workload::thrift::WorkloadDag makeDag(
     const std::map<std::string, std::vector<std::string>>& deps) {
@@ -267,6 +294,82 @@ TEST(DependencyInfoBuilderTest, NamesTheDagThatHasTheCycle) {
       ::testing::ThrowsMessage<std::invalid_argument>(::testing::StrEq(
           "Workload DAG 1 has a dependency cycle, so these workloads can "
           "never start: B, C")));
+}
+
+TEST(
+    DependencyInfoBuilderTest,
+    ThrowsWhenAWorkloadSharesNoNodeWithAnyDependency) {
+  packsim::thrift::Simulation sim;
+  auto& schedule = *sim.newWorkloadSchedule();
+  addScheduledWorkload(schedule, "A", 0, {0, 1});
+  addScheduledWorkload(schedule, "B", 1, {2, 3});
+  addScheduledWorkload(schedule, "C", 2, {1, 2});
+  // B runs on other nodes than A, its only dependency. C shares node 1 with A
+  // and node 2 with B.
+  schedule.workloadDags().ensure().emplace_back(
+      makeDag({{"A", {}}, {"B", {"A"}}, {"C", {"A", "B"}}}));
+
+  EXPECT_THAT(
+      [&] { DependencyInfoBuilder::build(sim); },
+      ::testing::ThrowsMessage<std::invalid_argument>(::testing::StrEq(
+          "Workload DAG 0 has workloads that share no node with any workload "
+          "they depend on: B. A workload waits for a dependency only on the "
+          "nodes the two share, so these would wait for none.")));
+}
+
+// Each rail of a two-rail workload depends on both rails of the workload before
+// it, as a DAG of rail-split workloads does, but shares nodes only with its own
+// rail.
+TEST(
+    DependencyInfoBuilderTest,
+    AcceptsAWorkloadThatSharesANodeWithOnlySomeOfItsDependencies) {
+  packsim::thrift::Simulation sim;
+  auto& schedule = *sim.newWorkloadSchedule();
+  addScheduledInternalWorkload(schedule, "A_r0", "A", 0, {0, 2});
+  addScheduledInternalWorkload(schedule, "A_r1", "A", 1, {1, 3});
+  addScheduledInternalWorkload(schedule, "B_r0", "B", 2, {0, 2});
+  addScheduledInternalWorkload(schedule, "B_r1", "B", 3, {1, 3});
+  schedule.workloadDags().ensure().emplace_back(
+      makeDag({{"A", {}}, {"B", {"A"}}}));
+
+  const auto infos = DependencyInfoBuilder::build(sim);
+  ASSERT_NE(infos, nullptr);
+  EXPECT_THAT(
+      infos->workloadIdDependencies.at(2),
+      ::testing::UnorderedElementsAre(0, 1));
+  EXPECT_THAT(
+      infos->workloadIdDependencies.at(3),
+      ::testing::UnorderedElementsAre(0, 1));
+}
+
+// The simulation pads a node ID with zeros, so [1] and [1, 0] name one node.
+TEST(DependencyInfoBuilderTest, NodeIdsThatDifferByTrailingZerosNameOneNode) {
+  packsim::thrift::Simulation sim;
+  auto& schedule = *sim.newWorkloadSchedule();
+  addScheduledWorkload(schedule, "A", 0, {1});
+  addScheduledWorkload(schedule, "B", 1, {1});
+  (*schedule.workloads()->at(1).rankToId())[0] = {1, 0};
+  schedule.workloadDags().ensure().emplace_back(
+      makeDag({{"A", {}}, {"B", {"A"}}}));
+
+  const auto infos = DependencyInfoBuilder::build(sim);
+  ASSERT_NE(infos, nullptr);
+  EXPECT_THAT(
+      infos->workloadIdDependencies.at(1), ::testing::UnorderedElementsAre(0));
+}
+
+TEST(DependencyInfoBuilderTest, AcceptsAWorkloadOnMoreNodesThanItsDependency) {
+  packsim::thrift::Simulation sim;
+  auto& schedule = *sim.newWorkloadSchedule();
+  addScheduledWorkload(schedule, "A", 0, {0, 1});
+  addScheduledWorkload(schedule, "B", 1, {0, 1, 2, 3});
+  schedule.workloadDags().ensure().emplace_back(
+      makeDag({{"A", {}}, {"B", {"A"}}}));
+
+  const auto infos = DependencyInfoBuilder::build(sim);
+  ASSERT_NE(infos, nullptr);
+  EXPECT_THAT(
+      infos->workloadIdDependencies.at(1), ::testing::UnorderedElementsAre(0));
 }
 
 } // namespace

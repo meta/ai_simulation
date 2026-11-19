@@ -216,6 +216,9 @@ void WorkloadNode::startWorkloads() {
     }
     runWorkload(workloadId, *ranks.begin()->second->workCfg_->startTimeNs());
   }
+  if (dt_) {
+    dt_->triggerWorkloadsWithOnlyRemoteDependencies();
+  }
 }
 
 void WorkloadNode::runWorkload(

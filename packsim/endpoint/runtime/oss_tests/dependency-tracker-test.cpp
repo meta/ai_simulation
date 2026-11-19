@@ -25,6 +25,7 @@ using ::testing::_;
 using ::testing::HasSubstr;
 using ::testing::Key;
 using ::testing::MockFunction;
+using ::testing::Ne;
 using ::testing::Pair;
 using ::testing::ThrowsMessage;
 using ::testing::UnorderedElementsAre;
@@ -454,6 +455,122 @@ TEST(
       },
       ThrowsMessage<std::invalid_argument>(
           HasSubstr("Workload 1 has 2 ranks on one node")));
+}
+
+TEST(DependencyTracker, TriggersOnlyWorkloadsWhoseDependenciesAllRunElsewhere) {
+  // Workload 0 runs on another node. On this node, workload 1 has no
+  // dependencies, 2 waits for 1, 3 waits only for 0, and 4 waits for 0 and 1.
+  DependencyInfos infos{
+      .workloadIdDependents = {{0, {3, 4}}, {1, {2, 4}}},
+      .workloadIdDependencies = {{2, {1}}, {3, {0}}, {4, {0, 1}}},
+  };
+
+  Scheduler scheduler;
+  SimContext simCtx{&scheduler, 0};
+  packsim::workload::thrift::Workload workCfg;
+  WorkloadRankParams::SubmitMessageFn smcb;
+  WorkloadRankParams::SubmitMessageFn rmcb;
+  WorkloadRankParams::OnRankCompleteCallback rccb;
+  WorkloadRankParams params{
+      .simCtx = &simCtx,
+      .workCfg = workCfg,
+      .smcb = smcb,
+      .rmcb = rmcb,
+      .rccb = rccb};
+  DependencyTracker::NodeWorkloadMap workloads;
+  for (uint32_t i = 1; i <= 4; ++i) {
+    workloads[i].emplace(0, std::make_unique<MockWorkloadRank>(params));
+  }
+
+  MockFunction<void(uint32_t /* workload ID */)> triggerWorkloadCb;
+  auto mockGlobalDagCoordinator =
+      std::make_unique<MockGlobalDagCoordinator>(&scheduler, 0, 0);
+  DependencyTracker dt(
+      workloads,
+      infos,
+      triggerWorkloadCb.AsStdFunction(),
+      /*buildWorkloadFn=*/{},
+      mockGlobalDagCoordinator.get(),
+      &simCtx);
+
+  EXPECT_CALL(triggerWorkloadCb, Call(3)).Times(1);
+  EXPECT_CALL(triggerWorkloadCb, Call(Ne(3))).Times(0);
+  dt.triggerWorkloadsWithOnlyRemoteDependencies();
+}
+
+TEST(
+    DependencyTracker,
+    NextIterationTriggersAWorkloadWhoseDependenciesAllRunElsewhere) {
+  // DAG 0 holds workloads 0, 1 and 2, and 2 waits for 0. Workload 0 runs on
+  // another node, so on this node 2 has nothing to wait for in any iteration.
+  DependencyInfos infos{
+      .workloadIdDependents = {{0, {2}}},
+      .workloadIdDependencies = {{2, {0}}},
+      .dagList =
+          {
+              DependencyDagInfos{
+                  .allWorkloadIds = {0, 1, 2},
+                  .startingWorkloadIds = {0, 1},
+                  .finishingWorkloadIds = {1, 2},
+              },
+          },
+      .workloadToDagId = {{0, 0}, {1, 0}, {2, 0}},
+  };
+
+  Scheduler scheduler;
+  SimContext simCtx{&scheduler, 0};
+  std::vector<packsim::workload::thrift::Workload> workCfgs(3);
+  WorkloadRankParams::SubmitMessageFn smcb;
+  WorkloadRankParams::SubmitMessageFn rmcb;
+  WorkloadRankParams::OnRankCompleteCallback rccb;
+  DependencyTracker::NodeWorkloadMap workloads;
+  for (uint32_t i = 1; i <= 2; ++i) {
+    workCfgs.at(i).workloadId() = i;
+    workCfgs.at(i).rankToId() = {{i, {i}}};
+    WorkloadRankParams params{
+        .simCtx = &simCtx,
+        .workCfg = workCfgs.at(i),
+        .rank = i,
+        .smcb = smcb,
+        .rmcb = rmcb,
+        .rccb = rccb};
+    workloads[i].emplace(i, std::make_unique<MockWorkloadRank>(params));
+  }
+  DependencyTracker::WorkloadDependencyMap workloadIdDependencies;
+  DependencyTracker::DagWorkloadMap dagToWorkloadIds = {{0, {1, 2}}};
+
+  MockFunction<void(uint32_t /* workload ID */)> triggerWorkloadCb;
+  MockFunction<void(
+      const packsim::workload::thrift::Workload& /* workload config */,
+      const uint32_t /* rank */,
+      const uint32_t /* iteration */)>
+      buildWorkloadCb;
+  auto mockGlobalDagCoordinator =
+      std::make_unique<MockGlobalDagCoordinator>(&scheduler, 0, 0);
+
+  EXPECT_CALL(*mockGlobalDagCoordinator, arrive(0, &simCtx, _))
+      .WillOnce([](uint32_t const /* dagId */,
+                   SimContext* const /* context */,
+                   std::function<void(uint32_t /* iter # */)> const& callback) {
+        callback(/* numIter= */ 1);
+      });
+  EXPECT_CALL(buildWorkloadCb, Call(workCfgs.at(1), 1, 2)).Times(1);
+  EXPECT_CALL(buildWorkloadCb, Call(workCfgs.at(2), 2, 2)).Times(1);
+  EXPECT_CALL(triggerWorkloadCb, Call(1)).Times(1);
+  EXPECT_CALL(triggerWorkloadCb, Call(2)).Times(1);
+
+  for (uint32_t const workloadId : {1u, 2u}) {
+    DependencyTracker::checkAndTriggerNextIteration(
+        &simCtx,
+        mockGlobalDagCoordinator.get(),
+        workloadIdDependencies,
+        dagToWorkloadIds,
+        workloadId,
+        infos,
+        workloads,
+        triggerWorkloadCb.AsStdFunction(),
+        buildWorkloadCb.AsStdFunction());
+  }
 }
 
 } // namespace packsim

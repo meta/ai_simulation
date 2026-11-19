@@ -41,6 +41,20 @@ const WorkloadRank* FOLLY_NONNULL getOnlyRank(
   }
   return ranks.begin()->second.get();
 }
+
+/**
+ * Whether @p workloadId still waits for a dependency on this node.
+ *
+ * @param workloadIdDependencies  Node-local dependencies still to finish
+ * @param workloadId              A workload with a rank on this node
+ * @return                        True if one of them is still to finish
+ */
+bool hasLocalDependencies(
+    DependencyTracker::WorkloadDependencyMap const& workloadIdDependencies,
+    uint32_t const workloadId) {
+  const auto it = workloadIdDependencies.find(workloadId);
+  return it != workloadIdDependencies.end() && !it->second.empty();
+}
 } // namespace
 
 DependencyTracker::DependencyTracker(
@@ -96,6 +110,15 @@ void DependencyTracker::postWorkloadCompletion(uint32_t const workloadId) {
     dependencies.erase(workloadId);
     if (dependencies.empty()) {
       triggerWorkloadFn_(dependentWorkloadId);
+    }
+  }
+}
+
+void DependencyTracker::triggerWorkloadsWithOnlyRemoteDependencies() {
+  for (auto const& [workloadId, _] : workloads_) {
+    if (infos_.workloadIdDependencies.contains(workloadId) &&
+        !hasLocalDependencies(workloadIdDependencies_, workloadId)) {
+      triggerWorkloadFn_(workloadId);
     }
   }
 }
@@ -206,10 +229,12 @@ void DependencyTracker::checkAndTriggerNextIteration(
                   }
                 }
               }
-              // Kick off the DAG again.
+              // Trigger the workloads of the DAG's next iteration that have
+              // nothing to wait for on this node: no dependencies, or
+              // dependencies that all run on other nodes.
               for (auto const dagWorkloadId : dagWorkloadIds) {
-                // Only start workloads that have no dependencies.
-                if (!infos.workloadIdDependencies.contains(dagWorkloadId)) {
+                if (!hasLocalDependencies(
+                        workloadIdDependencies, dagWorkloadId)) {
                   triggerWorkloadFn(dagWorkloadId);
                 }
               }

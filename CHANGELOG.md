@@ -144,6 +144,14 @@ on `main` has the detail.
 
 ### Fixed
 
+- A workload in a `WorkloadDag` (`packsim/if/workload.thrift`) now starts when
+  some of its ranks run on nodes that none of its dependencies use. Those
+  ranks waited for a dependency that never finished on their node, so the
+  workload never started and the run reported its ranks incomplete. A
+  workload still waits for each dependency on the nodes the two share. A DAG
+  in which a workload shares no node with any of its dependencies, which
+  never completed before, is now rejected, since the workload would wait for
+  none of them.
 - Collectives that send through `WorkloadRank::send()` and `recv()` -- the
   double binary tree and recursive algorithms, and the ring in
   `RingNicSelectionMode.SINGLE_NIC` -- send their data between the NICs of the

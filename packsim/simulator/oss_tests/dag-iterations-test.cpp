@@ -72,6 +72,26 @@ packsim::thrift::SimulationResult runIncastDag(const uint32_t minIterations) {
   return sim.getThriftResult();
 }
 
+// The two incasts as one DAG, the second after the first, where the first
+// shrinks to half as many ranks on the second's first half of accelerators. So
+// half of the second incast's ranks run on nodes the first does not use.
+packsim::thrift::Simulation buildIncastDagOnMoreNodesThanItsDependency() {
+  auto simCfg = buildTwoIncastSim();
+  auto& schedule = *simCfg.newWorkloadSchedule();
+  auto& workloads = *schedule.workloads();
+  auto& first = workloads.at(0);
+  const auto& secondRanks = *workloads.at(1).rankToId();
+  first.numEndpoints() = kRanksPerIncast / 2;
+  first.config()->incast()->numSources() = kRanksPerIncast / 2 - 1;
+  first.rankToId()->clear();
+  for (uint32_t rank = 0; rank < kRanksPerIncast / 2; ++rank) {
+    (*first.rankToId())[rank] = secondRanks.at(rank);
+  }
+  schedule.workloadDags().ensure().emplace_back(makeDag(
+      {{"TestWorkload_0", {}}, {"TestWorkload_1", {"TestWorkload_0"}}}));
+  return simCfg;
+}
+
 } // namespace
 
 TEST(DagIterationsTest, MinIterationsPerDagRunsEveryIterationOfTheDag) {
@@ -143,6 +163,45 @@ TEST(DagIterationsTest, FasterDagRepeatsUntilEveryDagReachesMinIterations) {
     EXPECT_EQ(workload.perRank()->size(), kRanksPerIncast)
         << name << " did not complete on every rank";
   }
+}
+
+TEST(DagIterationsTest, DependentOnMoreNodesThanItsDependencyStartsAfterIt) {
+  auto simCfg = buildIncastDagOnMoreNodesThanItsDependency();
+
+  PackSimSimulation sim(&simCfg);
+  sim.run();
+
+  const auto result = sim.getThriftResult();
+  const auto& workloads = *result.workloads();
+  ASSERT_TRUE(workloads.contains("TestWorkload_0"));
+  ASSERT_TRUE(workloads.contains("TestWorkload_1"));
+  const auto& first = workloads.at("TestWorkload_0");
+  const auto& second = workloads.at("TestWorkload_1");
+  EXPECT_EQ(first.perRank()->size(), kRanksPerIncast / 2);
+  EXPECT_EQ(second.perRank()->size(), kRanksPerIncast)
+      << "the second incast completes on the nodes the first does not use";
+  EXPECT_GE(*second.startTimeNs(), *first.endTimeNs());
+}
+
+TEST(
+    DagIterationsTest,
+    NextIterationStartsADependentOnMoreNodesThanItsDependency) {
+  auto simCfg = buildIncastDagOnMoreNodesThanItsDependency();
+  simCfg.newWorkloadSchedule()->minIterationsPerDag() = 2;
+
+  PackSimSimulation sim(&simCfg);
+  sim.run();
+
+  const auto result = sim.getThriftResult();
+  const auto& workloads = *result.workloads();
+  ASSERT_TRUE(workloads.contains("TestWorkload_0_ITER_2"));
+  ASSERT_TRUE(workloads.contains("TestWorkload_1_ITER_2"));
+  const auto& first = workloads.at("TestWorkload_0_ITER_2");
+  const auto& second = workloads.at("TestWorkload_1_ITER_2");
+  EXPECT_EQ(second.perRank()->size(), kRanksPerIncast)
+      << "the second incast completes its second iteration on the nodes the "
+         "first does not use";
+  EXPECT_GE(*second.startTimeNs(), *first.endTimeNs());
 }
 
 } // namespace packsim
