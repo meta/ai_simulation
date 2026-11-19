@@ -55,7 +55,8 @@ namespace packsim::coro {
  * cancel() semantics match the existing PDES `Event.cancel()` semantic
  * exactly (see packsim/kernel/pdes/Event.h `Scheduler::EventHandle::cancel`) —
  * the scheduled callback never runs, and the PDES queue is in the same
- * state as if the delay had never been scheduled.
+ * state as if the delay had never been scheduled. As with `Event.cancel()`,
+ * call it only on the context passed to awaitDelay(), or between runs.
  *
  * Non-copyable AND non-movable: owns a `coroutine_handle` whose frame
  * address is fixed, so it must be stored as a long-lived member of the
@@ -128,8 +129,7 @@ class SimCancellableDelay {
    * applies to every coro primitive whose cancel() destroys a frame.
    *
    * `noexcept` relies on `Scheduler::EventHandle::cancel()` being `noexcept`
-   * (a single bool write; see the static_asserts in the private section
-   * below).
+   * (see the static_asserts in the private section below).
    */
   void cancel() noexcept {
     scheduledResume_.cancel();

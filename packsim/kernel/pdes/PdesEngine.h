@@ -16,7 +16,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <queue>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -32,11 +31,11 @@
 #include <folly/Synchronized.h>
 #include <folly/concurrency/UnboundedQueue.h>
 #include <folly/container/F14Map.h>
-#include <folly/logging/xlog.h>
 #include <folly/portability/GTestProd.h>
 #include <gflags/gflags.h>
 
 #include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/ObjectAllocator.h"
 #include "packsim/kernel/pdes/SimulationContext.h"
 
 DECLARE_double(pdes_rebalance_seconds);
@@ -46,45 +45,6 @@ DECLARE_bool(pdes_integrate_balance);
 namespace packsim::pdes {
 
 namespace detail {
-
-template <typename T>
-class ObjectAllocator {
- public:
-  ObjectAllocator() = default;
-
-  ObjectAllocator(const ObjectAllocator&) = delete;
-  ObjectAllocator(ObjectAllocator&&) = delete;
-  ObjectAllocator& operator=(const ObjectAllocator&) = delete;
-  ObjectAllocator& operator=(ObjectAllocator&&) = delete;
-
-  T* FOLLY_NONNULL pop() {
-    if (objects_.empty()) {
-      return new T();
-    }
-    T* ret = objects_.back();
-    objects_.pop_back();
-    return ret;
-  }
-
-  // Resets `ptr` into the pool and clears it. The caller's pointer is cleared
-  // before anything can throw, so a failed append (out of memory) leaks the
-  // object rather than leaving the caller holding a reset one.
-  void push(T*& ptr) {
-    XCHECK(ptr != nullptr);
-    T* const object = std::exchange(ptr, nullptr);
-    object->reset();
-    objects_.emplace_back(object);
-  }
-
-  ~ObjectAllocator() {
-    for (auto& p : objects_) {
-      delete p;
-    }
-  }
-
- private:
-  std::vector<T*> objects_;
-};
 
 struct WorkerThread {
   WorkerThread() = default;
@@ -662,6 +622,15 @@ class PdesEngine {
   virtual time_point getTime() const;
 
  private:
+  /**
+   * Move `worker`'s backlog of new events into their contexts' queues,
+   * recycling those cancelled while they waited. Call it on that worker, or
+   * between frames.
+   *
+   * @param worker  Worker whose backlog to drain.
+   */
+  static void drainEventBacklog(detail::WorkerThread& worker);
+
   // Returns true if the engine should pause between frames (an explicit pause
   // request or a reached breakpoint) and consumes that trigger. The caller must
   // hold startStopMutex_ (this reads lastEventTimeFs_); it does not touch the

@@ -9,7 +9,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <utility>
 
 #include <folly/CPortability.h>
 #include <folly/CppAttributes.h>
@@ -49,10 +48,19 @@ struct RawEvent {
   // 4 bytes
   std::atomic_uint32_t version{0};
 
-  // Whether this event should be executed comes time.
-  // This can be used to cancel events before scheduled time eviction.
-  // 1 byte
-  std::atomic_bool isActive = true;
+  // Position of this event in its context's queue (see EventQueue). Outside
+  // the queue, while the event waits in a worker's backlog or runs, it is
+  // kNotQueued, or kCancelled once the event is cancelled there.
+  // 4 bytes
+  uint32_t queueIndex = kNotQueued;
+
+  // queueIndex of an active event outside its context's queue.
+  static constexpr uint32_t kNotQueued = UINT32_MAX;
+
+  // queueIndex of an event cancelled outside its context's queue: a worker
+  // drops it from its backlog instead of queueing it, and one already running
+  // finishes that run.
+  static constexpr uint32_t kCancelled = kNotQueued - 1;
 
   // Number of low-order bits of sortId reserved for the per-context event id;
   // the scheduling context index is packed into the remaining high-order bits.
@@ -62,13 +70,14 @@ struct RawEvent {
     sortId = (ctxIdx << kSortIdEventIdBits) | eventId;
   }
 
-  // Every access to `version` and `isActive` is relaxed. Only the thread that
-  // runs an event's context pops, runs, skips and resets the event, and a
-  // handle may read or cancel it only on that thread or between frames. Program
-  // order, or the event queues and the frame barriers (which also order a
-  // context's move to another thread), order each access against those it must
-  // see, and none of them publishes other data, so they only need to be
-  // tear-free: the bump needs no read-modify-write and no store a fence. A
+  // Every access to `version` is relaxed. Only the thread that runs an event's
+  // context queues, pops, runs, cancels and resets the event, and a handle may
+  // read or cancel it only on that thread or between frames. Program order, or
+  // the event queues and the frame barriers (which also order a context's move
+  // to another thread), order each access against those it must see, and none
+  // of them publishes other data, so they only need to be tear-free: the bump
+  // needs no read-modify-write and no store a fence. `queueIndex` follows the
+  // same rule and is never read from another thread, so it is a plain field. A
   // handle used from another thread within a frame races the event under any
   // memory order.
   void reset() {
@@ -78,7 +87,7 @@ struct RawEvent {
     timeFs = 0;
     func = nullptr;
     context = nullptr;
-    isActive.store(true, std::memory_order_relaxed);
+    queueIndex = kNotQueued;
   }
 };
 
@@ -91,8 +100,9 @@ static_assert(
  * Handle to a scheduled event, returned by the engine's schedule calls, to
  * cancel the event before it runs or ask whether it is still pending. It holds
  * the event's pointer and version, so it may outlive the event: once the event
- * has run or been discarded, its slot is recycled under a new version and the
- * handle reads as stale: cancel() does nothing and isActive() returns false.
+ * has run or been cancelled, cancel() does nothing and isActive() returns
+ * false, and once its slot is recycled under a new version, the handle reads
+ * as stale.
  *
  * Example usage:
  *
@@ -100,14 +110,22 @@ static_assert(
  *      ...
  *      timeout.cancel(); // no-op if onTimeout already ran
  *
- * NOTE: Use a handle only on the worker thread that runs the event's context,
- * or between runs. Every handle packsim keeps comes from scheduling on its
- * owner's own context and stays there, so the event is cancelled through it,
- * run and recycled on one worker, in program order. The frame barriers order
- * the rare accesses made between runs, and a context's move to another worker,
- * which rebalancing does only between frames. The accessors rely on this rule
- * and use relaxed atomics (see RawEvent::reset()); a handle used from another
- * worker during a frame races the event under any memory order.
+ * NOTE: Use a handle only from its event's own context, or between runs; debug
+ * builds check this in cancel(), except for a cancel made during a run from a
+ * thread outside the worker pool or while a worker drains its backlog (for
+ * example by the destructor of something a cancelled callback held), which is
+ * just as unsafe. To cancel another context's event, schedule an event on that
+ * context, at least a lookahead ahead, that cancels it there. Destructors of
+ * what a cancelled callback holds run inside cancel() or while a worker drains
+ * its backlog, possibly outside any context, so they must not schedule events
+ * or read the engine's clock (PdesEngine::nowFs()).
+ * Every handle packsim keeps comes from scheduling on its owner's own context
+ * and stays there, so the event is cancelled through it, run and recycled on
+ * one worker, in program order. The frame barriers order the rare accesses made
+ * between runs, and a context's move to another worker, which rebalancing does
+ * only between frames. The accessors rely on this rule and use relaxed atomics
+ * (see RawEvent::reset()); a handle used from another worker during a frame
+ * races the event under any memory order.
  */
 struct Event {
   Event() = default;
@@ -117,34 +135,22 @@ struct Event {
         rawEventVersion(rawEventPtr->version.load(std::memory_order_relaxed)) {}
 
   /**
-   * Stop the event's callback from running; the engine discards the event
-   * when it reaches the front of its context's queue. No-op on a
-   * default-constructed handle, on a stale handle (the event already ran or
-   * was discarded and its slot was recycled), and on an already-cancelled
-   * event, so callers need not check isActive() first. Called from the
-   * event's own callback, it does not stop that run; it only makes isActive()
-   * return false.
+   * Stop the event's callback from running: remove the event from its
+   * context's queue and recycle it at once, which destroys the callback and
+   * everything it holds. An event still in a worker's backlog is only marked,
+   * and recycled when the backlog is drained. No-op on a default-constructed
+   * handle, on a stale handle (the event already ran or was cancelled and its
+   * slot was recycled), and on an already-cancelled event, so callers need not
+   * check isActive() first. Called from the event's own callback, it does not
+   * stop that run; it only makes isActive() return false. Defined in
+   * PdesEngine.cpp, which owns the event pools.
    */
-  void cancel() const noexcept {
-    // cancel()'s noexcept guarantee depends on isValid() being noexcept;
-    // pin that at compile time so a future logging/dispatch addition to
-    // isValid() that introduces a throwing path fails to build here
-    // rather than silently terminating from inside a noexcept call.
-    static_assert(noexcept(std::declval<const Event&>().isValid()));
-    if (isValid()) {
-      // Relaxed (see RawEvent::reset()): program order or the frame barriers
-      // already order this store before the engine checks the flag.
-      rawEvent->isActive.store(false, std::memory_order_relaxed);
-    }
-  }
+  void cancel() const noexcept;
 
   // True from scheduling until the event is cancelled or its callback has
   // returned; still true while the callback itself runs.
   bool isActive() const noexcept {
-    if (isValid()) {
-      return rawEvent->isActive.load(std::memory_order_relaxed);
-    }
-    return false;
+    return isValid() && rawEvent->queueIndex != RawEvent::kCancelled;
   }
 
   uint64_t getEventTimeFs() const noexcept {

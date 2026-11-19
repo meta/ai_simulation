@@ -877,8 +877,8 @@ TEST_F(LlrTxTest, ShutdownDrainsSynchronouslyWithoutAdvancingTime) {
       << "shutdown() must not advance sim time";
 
   // After shutdown's drain, a final scheduler.run() processes any
-  // remaining queued events (e.g., timer cancellations). No XCHECK
-  // should fire from undrained event waiters.
+  // remaining queued events. No XCHECK should fire from undrained event
+  // waiters.
   scheduler().run();
   SUCCEED();
 }

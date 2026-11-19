@@ -686,14 +686,16 @@ TEST(PdesEngine, SameTimeEventsRunInSortIdOrderRatherThanQueueOrder) {
       ElementsAre("scheduled by the context", "scheduled between runs"));
 }
 
-TEST(PdesEngine, CancelledEventIsSkippedWhenItReachesTheFront) {
+TEST(PdesEngine, CancelFromTheSameContextRemovesTheEventAtOnce) {
   auto pdes = PdesEngine(/* lookaheadTimeFs= */ 100, /* numThreads= */ 1);
   SimulationContext context;
   std::vector<std::string> ranEvents;
   Event cancelled;
-  pdes.scheduleAt(&context, /* timeFs= */ 10, [&ranEvents, &cancelled]() {
+  bool staleAfterCancel = false;
+  pdes.scheduleAt(&context, /* timeFs= */ 10, [&]() {
     ranEvents.emplace_back("canceller");
     cancelled.cancel();
+    staleAfterCancel = !cancelled.isValid();
   });
   cancelled = pdes.scheduleAt(&context, /* timeFs= */ 20, [&ranEvents]() {
     ranEvents.emplace_back("cancelled");
@@ -705,6 +707,54 @@ TEST(PdesEngine, CancelledEventIsSkippedWhenItReachesTheFront) {
   pdes.run();
 
   EXPECT_THAT(ranEvents, ElementsAre("canceller", "after the cancelled one"));
+  EXPECT_TRUE(staleAfterCancel);
+}
+
+TEST(PdesEngine, CancelFromItsOwnCallbackDoesNotStopTheRun) {
+  auto pdes = PdesEngine(/* lookaheadTimeFs= */ 10, /* numThreads= */ 2);
+  SimulationContext context;
+  Event handle;
+  bool activeAfterCancel = true;
+  bool finished = false;
+  handle = pdes.scheduleAt(&context, /* timeFs= */ 5, [&]() {
+    handle.cancel();
+    activeAfterCancel = handle.isActive();
+    finished = true;
+  });
+
+  pdes.run();
+
+  EXPECT_FALSE(activeAfterCancel);
+  EXPECT_TRUE(finished);
+}
+
+TEST(PdesEngine, CancelBetweenRunsRemovesTheEventAtOnce) {
+  auto pdes = PdesEngine(/* lookaheadTimeFs= */ 10, /* numThreads= */ 2);
+  SimulationContext context;
+  const Event event = pdes.scheduleAt(&context, /* timeFs= */ 100, []() {});
+  // The first frame moves the event from its worker's backlog to the context's
+  // queue.
+  pdes.run(/* durationFs= */ 10);
+  ASSERT_EQ(pdes.getEventCount(), 1);
+
+  event.cancel();
+
+  EXPECT_EQ(pdes.getEventCount(), 0);
+  EXPECT_FALSE(event.isValid());
+}
+
+TEST(PdesEngine, CancelBeforeAnyFrameDropsTheEventFromTheBacklog) {
+  auto pdes = PdesEngine(/* lookaheadTimeFs= */ 10, /* numThreads= */ 2);
+  SimulationContext context;
+  const Event event = pdes.scheduleAt(&context, /* timeFs= */ 100, []() {});
+  event.cancel();
+
+  // One frame, which starts by draining the backlog and ends long before
+  // the event's time.
+  pdes.run(/* durationFs= */ 10);
+
+  EXPECT_EQ(pdes.getEventCount(), 0);
+  EXPECT_FALSE(event.isValid());
 }
 
 TEST(PdesEngine, PdesEngineCheckTimeAdvancementDurationZero) {

@@ -115,6 +115,13 @@ on `main` has the detail.
 - `RoceSocketBase::fetchDataAndSend` takes the `Message` instead of its
   sequence number and WRITE fields, and whether the bytes start the message;
   an override must change with it.
+- `Scheduler::EventHandle::cancel()` now removes the event from its context's
+  queue at once, instead of leaving it queued until its time. A timer re-armed
+  by cancelling and rescheduling its event no longer leaves one dead event per
+  re-arm, so such runs need less memory; results do not change. For an event in
+  its context's queue, the handle reads as stale at once, so `getEventTimeFs()`
+  returns 0. Debug builds abort when a context cancels another context's event
+  during a run.
 
 ### Removed
 
@@ -128,6 +135,9 @@ on `main` has the detail.
   `SimContext::getTimeUntilEvent` in `packsim/kernel/sim-context.h`, which
   nothing in PackSim calls any more. A pending event's due time is still on its
   handle, `Scheduler::EventHandle::getEventTimeFs()`.
+- `RawEvent::isActive` in `packsim/kernel/pdes/Event.h`. `RawEvent::queueIndex`
+  records the event's position in its context's queue, or that it was cancelled
+  outside it.
 
 ### Fixed
 

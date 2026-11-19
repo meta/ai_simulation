@@ -66,7 +66,60 @@ thread_local CurrentWorker tlsCurrentWorker;
 
 // Source of PdesEngine::engineId_; 0 is reserved for "no engine".
 std::atomic_uint64_t nextEngineId{1};
+
+// The context whose events the calling worker is running; none between runs,
+// off the pool, and while a worker drains its backlog.
+const SimulationContext* getRunningContext() noexcept {
+  return tlsCurrentWorker.worker != nullptr
+      ? tlsCurrentWorker.worker->currentContext
+      : nullptr;
+}
+
+/**
+ * Cancel `event` at once: remove it from its context's queue and recycle it,
+ * or, while it is outside the queue, mark it cancelled. Call it only on the
+ * thread that runs the event's context, or between frames. Recycling can run
+ * out of memory, which terminates the process.
+ *
+ * @param event  Event to cancel, still under the version of the handle used.
+ */
+void cancelNow(RawEvent& event) noexcept {
+  switch (event.queueIndex) {
+    case RawEvent::kCancelled:
+      return;
+    case RawEvent::kNotQueued:
+      // Waiting in a backlog, which PdesEngine::drainEventBacklog() then drops
+      // it from, or running, after which the worker recycles it as usual.
+      event.queueIndex = RawEvent::kCancelled;
+      return;
+    default:
+      event.context->eventQ.erase(&event);
+      RawEvent* cancelled = &event;
+      PdesEngine::eventPool().push(cancelled);
+  }
+}
 } // namespace
+
+void Event::cancel() const noexcept {
+  // cancel()'s noexcept guarantee depends on isValid() being noexcept; pin
+  // that at compile time so a future logging/dispatch addition to isValid()
+  // that introduces a throwing path fails to build here rather than silently
+  // terminating from inside a noexcept call.
+  static_assert(noexcept(std::declval<const Event&>().isValid()));
+  if (isValid()) {
+    // From another context, removing the event would change a queue that
+    // another worker may be using (see the NOTE on Event).
+    XDCHECK(
+        getRunningContext() == nullptr ||
+        getRunningContext() == rawEvent->context)
+        << fmt::format(
+               "Context {} cancelled an event of context {}; cancel it from "
+               "its own context",
+               getRunningContext()->nameWithPtr(),
+               rawEvent->context->nameWithPtr());
+    cancelNow(*rawEvent);
+  }
+}
 
 PdesEngine::PdesEngine(const uint64_t lookaheadTimeFs, const size_t numThreads)
     : engineId_(nextEngineId.fetch_add(1, std::memory_order_relaxed)),
@@ -469,6 +522,17 @@ void PdesEngine::queueWorkerException(
   }
 }
 
+void PdesEngine::drainEventBacklog(detail::WorkerThread& worker) {
+  while (!worker.eventBacklog.empty()) {
+    RawEvent* event = worker.eventBacklog.dequeue();
+    if (event->queueIndex == RawEvent::kCancelled) {
+      eventPool().push(event);
+    } else {
+      event->context->eventQ.push(event);
+    }
+  }
+}
+
 void PdesEngine::createThreadPool() {
   threadPool_.reserve(numThreads_);
   for (size_t i = 0; i < numThreads_; ++i) {
@@ -491,11 +555,12 @@ void PdesEngine::createThreadPool() {
         }
 
         try {
+          // No context's event runs until the frame's events start, so the
+          // drain below destroys the callbacks of cancelled events outside
+          // any context.
+          workerPtr->currentContext = nullptr;
           // Sync all the scheduled events into the priority queue.
-          while (!workerPtr->eventBacklog.empty()) {
-            auto backlogEvent = workerPtr->eventBacklog.dequeue();
-            backlogEvent->context->eventQ.push(backlogEvent);
-          }
+          drainEventBacklog(*workerPtr);
           // It is possible new contexts are created within this iteration, so
           // run from a snapshot of the list.
           contexts = *workerPtr->contexts.rlock();
@@ -528,7 +593,8 @@ void PdesEngine::createThreadPool() {
                   (eventQ.top()->timeFs >= nextFrameTimeFs_)) {
                 break;
               }
-              // Skip inactive events, execute otherwise.
+              // A cancelled event has already left the queue, so every event
+              // popped here runs.
               event = eventQ.top();
               eventQ.pop();
               if (event->context != context) {
@@ -539,32 +605,29 @@ void PdesEngine::createThreadPool() {
                         event->context->nameWithPtr(),
                         context->nameWithPtr()));
               }
-              // Relaxed, like every access to the flag (see RawEvent::reset()).
-              if (event->isActive.load(std::memory_order_relaxed)) {
-                if (context->currentTimeFs > event->timeFs) {
-                  // If this is happening, it is likely because you are
-                  // scheduling events on other contexts that are supposed to
-                  // run before lookahead time. Try reducing the lookahead time
-                  // or make sure you enforce it correctly.
-                  throw std::runtime_error(
-                      fmt::format(
-                          "Causality Paradox: Cannot execute an event at time {} "
-                          "in the past relative to current time {} for context {}.",
-                          event->timeFs,
-                          context->currentTimeFs.load(),
-                          event->context->nameWithPtr()));
-                }
-
-                // Only this thread writes the clock during a frame; other
-                // threads sample it, and the frame barriers order everything
-                // else, so the store needs no fence.
-                context->currentTimeFs.store(
-                    event->timeFs, std::memory_order_relaxed);
-                workerPtr->lastEventTimeFs =
-                    std::max(event->timeFs, workerPtr->lastEventTimeFs);
-                event->func();
-                workerPtr->eventsExecuted++;
+              if (context->currentTimeFs > event->timeFs) {
+                // If this is happening, it is likely because you are
+                // scheduling events on other contexts that are supposed to
+                // run before lookahead time. Try reducing the lookahead time
+                // or make sure you enforce it correctly.
+                throw std::runtime_error(
+                    fmt::format(
+                        "Causality Paradox: Cannot execute an event at time {} "
+                        "in the past relative to current time {} for context {}.",
+                        event->timeFs,
+                        context->currentTimeFs.load(),
+                        event->context->nameWithPtr()));
               }
+
+              // Only this thread writes the clock during a frame; other
+              // threads sample it, and the frame barriers order everything
+              // else, so the store needs no fence.
+              context->currentTimeFs.store(
+                  event->timeFs, std::memory_order_relaxed);
+              workerPtr->lastEventTimeFs =
+                  std::max(event->timeFs, workerPtr->lastEventTimeFs);
+              event->func();
+              workerPtr->eventsExecuted++;
               eventPool().push(event);
             }
             auto const timerEnd = getTime();
@@ -624,10 +687,7 @@ void PdesEngine::rebalanceContexts() {
     thread->currentContext = nullptr;
 
     // Drain thread's backlog
-    while (!thread->eventBacklog.empty()) {
-      auto event = thread->eventBacklog.dequeue();
-      event->context->eventQ.push(event);
-    }
+    drainEventBacklog(*thread);
   }
 
   // If flag is not set, reset the time spent per context to 0. We've already

@@ -12,6 +12,8 @@
 #include <gtest/gtest.h>
 
 #include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/PdesEngine.h"
+#include "packsim/kernel/pdes/SimulationContext.h"
 
 namespace packsim::pdes {
 
@@ -26,7 +28,7 @@ TEST(RawEvent, ResetClearsFieldsAndBumpsVersion) {
   RawEvent event;
   event.timeFs = 123;
   event.sortId = 456;
-  event.isActive = false;
+  event.queueIndex = RawEvent::kCancelled;
   event.func = [] {
   }; // set non-empty so the post-reset func check is meaningful
   event.context = reinterpret_cast<SimulationContext*>(&sentinel); // non-null
@@ -36,7 +38,7 @@ TEST(RawEvent, ResetClearsFieldsAndBumpsVersion) {
 
   EXPECT_EQ(event.timeFs, 0);
   EXPECT_EQ(event.sortId, 0u);
-  EXPECT_TRUE(event.isActive.load());
+  EXPECT_EQ(event.queueIndex, RawEvent::kNotQueued);
   EXPECT_FALSE(static_cast<bool>(event.func));
   EXPECT_EQ(event.context, nullptr);
   EXPECT_EQ(event.version.load(), versionBefore + 1);
@@ -59,14 +61,14 @@ TEST(Event, ValidHandleReflectsRawEventState) {
   EXPECT_EQ(event.getEventTimeFs(), 42u);
 }
 
-TEST(Event, CancelMarksRawEventInactive) {
+TEST(Event, CancelOutsideAQueueMarksTheEventCancelled) {
   RawEvent raw;
   raw.timeFs = 10;
   Event event(&raw);
 
   event.cancel();
 
-  EXPECT_FALSE(raw.isActive.load());
+  EXPECT_EQ(raw.queueIndex, RawEvent::kCancelled);
   EXPECT_FALSE(event.isActive());
 }
 
@@ -85,7 +87,27 @@ TEST(Event, StaleHandleAfterResetIsInvalidAndCancelIsNoOp) {
 
   // Cancelling through a stale handle must not touch the recycled RawEvent.
   event.cancel();
-  EXPECT_TRUE(raw.isActive.load());
+  EXPECT_EQ(raw.queueIndex, RawEvent::kNotQueued);
+}
+
+TEST(Event, CancelFromAnotherContextAbortsInDebugBuilds) {
+  // The statement builds its own engine: in a debug build it runs in the death
+  // test's forked child, and this binary starts no thread before the fork, so
+  // the engine's worker can start there. In an opt build the check is compiled
+  // out and the statement runs here, on one worker, where the cancel is safe.
+  // NOLINTNEXTLINE(facebook-gtest-expect-death)
+  EXPECT_DEBUG_DEATH(
+      {
+        auto pdes = PdesEngine(/* lookaheadTimeFs= */ 100, /* numThreads= */ 1);
+        SimulationContext canceller;
+        SimulationContext target;
+        const Event event =
+            pdes.scheduleAt(&target, /* timeFs= */ 150, []() {});
+        pdes.scheduleAt(
+            &canceller, /* timeFs= */ 10, [&event]() { event.cancel(); });
+        pdes.run();
+      },
+      "cancelled an event of context");
 }
 
 TEST(EventComparator, OrdersByAscendingTime) {

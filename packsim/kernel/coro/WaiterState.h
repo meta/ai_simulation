@@ -232,7 +232,7 @@ class WaiterState {
    * suspension point.
    *
    * `noexcept` relies on `Scheduler::EventHandle::cancel()` being `noexcept`
-   * (a single bool write; see the static_asserts above the class).
+   * (see the static_asserts above the class).
    */
   void cancel() noexcept {
     scheduledResume_.cancel();

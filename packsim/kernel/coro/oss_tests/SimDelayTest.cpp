@@ -353,8 +353,7 @@ TEST_F(SimDelayTest, CancellableZeroDelayCancelScheduledBeforeTaskIsNoOp) {
 // resume queued at the same logical tick. cancel() must remove the queued
 // resume from PDES AND destroy the suspended frame, even though both the
 // cancel and the resume are at t=0 — the harder "cancel races a same-tick
-// zero-delay resume" case that exercises the dispatcher's isActive-skip
-// path.
+// zero-delay resume" case.
 //
 // CancelBeforeFirePreventsResume covers the easier different-tick case
 // (cancel at t=50 vs resume at t=100); this test covers the same-tick

@@ -9,13 +9,12 @@
 
 #include <atomic>
 #include <cstdint>
-#include <queue>
 #include <string>
-#include <vector>
 
 #include <fmt/format.h>
 
 #include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/EventQueue.h"
 
 namespace packsim::pdes {
 
@@ -68,9 +67,8 @@ struct SimulationContext {
   // Name used to identify this context in logs (see nameWithPtr()).
   std::string name;
 
-  // Per-context priority queue of pending events, ordered by event time.
-  std::priority_queue<RawEvent*, std::vector<RawEvent*>, EventComparator>
-      eventQ;
+  // Pending events of this context, earliest first.
+  EventQueue eventQ;
 
   // Monotonic per-context event id, used to build a stable event sort key.
   uint32_t nextEventId{0};
