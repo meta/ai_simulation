@@ -14,7 +14,7 @@
 #include <folly/CPortability.h>
 #include <folly/logging/xlog.h>
 
-#include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/RawEvent.h"
 
 namespace packsim::pdes {
 

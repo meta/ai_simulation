@@ -10,7 +10,7 @@
 
 #include <gtest/gtest.h>
 
-#include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/RawEvent.h"
 #include "packsim/kernel/pdes/SimulationContext.h"
 
 namespace packsim::pdes {

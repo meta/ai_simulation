@@ -13,8 +13,8 @@
 
 #include <fmt/format.h>
 
-#include "packsim/kernel/pdes/Event.h"
 #include "packsim/kernel/pdes/EventQueue.h"
+#include "packsim/kernel/pdes/RawEvent.h"
 
 namespace packsim::pdes {
 

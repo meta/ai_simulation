@@ -27,7 +27,6 @@
 #include <folly/Likely.h>
 #include <folly/Portability.h>
 #include <folly/SharedMutex.h>
-#include <folly/SingletonThreadLocal.h>
 #include <folly/Synchronized.h>
 #include <folly/concurrency/UnboundedQueue.h>
 #include <folly/container/F14Map.h>
@@ -35,7 +34,9 @@
 #include <gflags/gflags.h>
 
 #include "packsim/kernel/pdes/Event.h"
+#include "packsim/kernel/pdes/EventPool.h"
 #include "packsim/kernel/pdes/ObjectAllocator.h"
+#include "packsim/kernel/pdes/RawEvent.h"
 #include "packsim/kernel/pdes/SimulationContext.h"
 
 DECLARE_double(pdes_rebalance_seconds);
@@ -245,7 +246,7 @@ class PdesEngine {
     if (timeFs < nowFs) {
       throw std::runtime_error("Time overflow, cannot schedule the event.");
     }
-    auto eventPtr = eventPool().pop();
+    auto eventPtr = EventPool::get().pop();
     eventPtr->timeFs = timeFs;
     // A C++20 pack init-capture, not std::bind. The one behavioural difference
     // is that bind unwraps a std::reference_wrapper before the call while this
@@ -467,11 +468,6 @@ class PdesEngine {
    */
   void printExitStats() const;
 
-  static detail::ObjectAllocator<RawEvent>& eventPool() {
-    return folly::SingletonThreadLocal<
-        detail::ObjectAllocator<RawEvent>>::get();
-  }
-
  protected:
   /**
    * Schedule an event to run at given time on the given context. Make sure
@@ -507,7 +503,7 @@ class PdesEngine {
     if (timeFs < context->currentTimeFs.load()) {
       throw std::runtime_error("Cannot schedule an event in the past");
     }
-    auto eventPtr = eventPool().pop();
+    auto eventPtr = EventPool::get().pop();
 
     if (LIKELY(isRunning_)) {
       SimulationContext* srcCtx = getCurrentThread()->currentContext;

@@ -34,6 +34,8 @@
 #include <folly/system/HardwareConcurrency.h>
 #include <gflags/gflags.h>
 
+#include "packsim/kernel/pdes/EventPool.h"
+#include "packsim/kernel/pdes/RunningContext.h"
 #include "packsim/kernel/stack-trace.h"
 
 DEFINE_double(
@@ -66,60 +68,7 @@ thread_local CurrentWorker tlsCurrentWorker;
 
 // Source of PdesEngine::engineId_; 0 is reserved for "no engine".
 std::atomic_uint64_t nextEngineId{1};
-
-// The context whose events the calling worker is running; none between runs,
-// off the pool, and while a worker drains its backlog.
-const SimulationContext* getRunningContext() noexcept {
-  return tlsCurrentWorker.worker != nullptr
-      ? tlsCurrentWorker.worker->currentContext
-      : nullptr;
-}
-
-/**
- * Cancel `event` at once: remove it from its context's queue and recycle it,
- * or, while it is outside the queue, mark it cancelled. Call it only on the
- * thread that runs the event's context, or between frames. Recycling can run
- * out of memory, which terminates the process.
- *
- * @param event  Event to cancel, still under the version of the handle used.
- */
-void cancelNow(RawEvent& event) noexcept {
-  switch (event.queueIndex) {
-    case RawEvent::kCancelled:
-      return;
-    case RawEvent::kNotQueued:
-      // Waiting in a backlog, which PdesEngine::drainEventBacklog() then drops
-      // it from, or running, after which the worker recycles it as usual.
-      event.queueIndex = RawEvent::kCancelled;
-      return;
-    default:
-      event.context->eventQ.erase(&event);
-      RawEvent* cancelled = &event;
-      PdesEngine::eventPool().push(cancelled);
-  }
-}
 } // namespace
-
-void Event::cancel() const noexcept {
-  // cancel()'s noexcept guarantee depends on isValid() being noexcept; pin
-  // that at compile time so a future logging/dispatch addition to isValid()
-  // that introduces a throwing path fails to build here rather than silently
-  // terminating from inside a noexcept call.
-  static_assert(noexcept(std::declval<const Event&>().isValid()));
-  if (isValid()) {
-    // From another context, removing the event would change a queue that
-    // another worker may be using (see the NOTE on Event).
-    XDCHECK(
-        getRunningContext() == nullptr ||
-        getRunningContext() == rawEvent->context)
-        << fmt::format(
-               "Context {} cancelled an event of context {}; cancel it from "
-               "its own context",
-               getRunningContext()->nameWithPtr(),
-               rawEvent->context->nameWithPtr());
-    cancelNow(*rawEvent);
-  }
-}
 
 PdesEngine::PdesEngine(const uint64_t lookaheadTimeFs, const size_t numThreads)
     : engineId_(nextEngineId.fetch_add(1, std::memory_order_relaxed)),
@@ -518,7 +467,7 @@ void PdesEngine::queueWorkerException(
   // this frame, and the pool's reset() is what makes such a handle read as
   // stale instead of reading freed memory.
   if (event) {
-    eventPool().push(event);
+    EventPool::get().push(event);
   }
 }
 
@@ -526,7 +475,7 @@ void PdesEngine::drainEventBacklog(detail::WorkerThread& worker) {
   while (!worker.eventBacklog.empty()) {
     RawEvent* event = worker.eventBacklog.dequeue();
     if (event->queueIndex == RawEvent::kCancelled) {
-      eventPool().push(event);
+      EventPool::get().push(event);
     } else {
       event->context->eventQ.push(event);
     }
@@ -541,6 +490,7 @@ void PdesEngine::createThreadPool() {
                                                             worker.get(),
                                                         this]() {
       tlsCurrentWorker = {.engine = this, .worker = workerPtr};
+      RunningContext::trackThisThread(workerPtr->currentContext);
       // This frame's snapshot of the worker's contexts. Each frame assigns it
       // afresh, which replaces the previous frame's contents and keeps the
       // capacity, so taking the snapshot stops allocating once it fits.
@@ -628,7 +578,7 @@ void PdesEngine::createThreadPool() {
                   std::max(event->timeFs, workerPtr->lastEventTimeFs);
               event->func();
               workerPtr->eventsExecuted++;
-              eventPool().push(event);
+              EventPool::get().push(event);
             }
             auto const timerEnd = getTime();
             auto const timeSpentNs =

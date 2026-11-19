@@ -21,8 +21,8 @@ namespace packsim::pdes::detail {
  * reuse. The pool owns the objects it holds and deletes them when it is
  * destroyed.
  *
- * NOTE: Not thread-safe. PdesEngine keeps one pool per thread (see
- * PdesEngine::eventPool()).
+ * NOTE: Not thread-safe. The engine keeps its events in one pool per thread
+ * (see EventPool).
  */
 template <typename T>
 class ObjectAllocator {

@@ -16,7 +16,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "packsim/kernel/pdes/Event.h"
 #include "packsim/kernel/pdes/PdesEngine.h"
+#include "packsim/kernel/pdes/SimulationContext.h"
 
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
@@ -755,6 +757,26 @@ TEST(PdesEngine, CancelBeforeAnyFrameDropsTheEventFromTheBacklog) {
 
   EXPECT_EQ(pdes.getEventCount(), 0);
   EXPECT_FALSE(event.isValid());
+}
+
+TEST(PdesEngine, CancelFromTheSameContextRecyclesTheEventForTheNextSchedule) {
+  auto pdes = PdesEngine(/* lookaheadTimeFs= */ 100, /* numThreads= */ 1);
+  SimulationContext context;
+  Event cancelledEvent;
+  Event nextEvent;
+  pdes.scheduleAt(&context, /* timeFs= */ 10, [&]() {
+    cancelledEvent = pdes.schedule(/* delayFs= */ 10, []() {});
+    cancelledEvent.cancel();
+    nextEvent = pdes.schedule(/* delayFs= */ 10, []() {});
+  });
+
+  pdes.run();
+
+  ASSERT_NE(cancelledEvent.rawEvent, nullptr);
+  EXPECT_EQ(nextEvent.rawEvent, cancelledEvent.rawEvent);
+  // Recycling bumps the version; an event freed and allocated again at the
+  // same address would start over at 0.
+  EXPECT_EQ(nextEvent.rawEventVersion, cancelledEvent.rawEventVersion + 1);
 }
 
 TEST(PdesEngine, PdesEngineCheckTimeAdvancementDurationZero) {

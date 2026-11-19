@@ -138,6 +138,9 @@ on `main` has the detail.
 - `RawEvent::isActive` in `packsim/kernel/pdes/Event.h`. `RawEvent::queueIndex`
   records the event's position in its context's queue, or that it was cancelled
   outside it.
+- `PdesEngine::eventPool()` in `packsim/kernel/pdes/PdesEngine.h`.
+  `EventPool::get()`, in `packsim/kernel/pdes/EventPool.h`, returns the same
+  per-thread pool.
 
 ### Fixed
 
