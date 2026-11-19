@@ -79,7 +79,7 @@ GoBackNRecovery::~GoBackNRecovery() {
 }
 
 bool GoBackNRecovery::isSendBlocked() const {
-  return simCtx_->getTimeUntilEvent(rnrEvent_) > Time(0);
+  return simCtx_->now() < rnrBackoffEnd_;
 }
 
 PsnAction GoBackNRecovery::checkPsn(
@@ -212,11 +212,11 @@ void GoBackNRecovery::onNack(
 
   // RNR back-off: defer wakeup; otherwise wake the socket immediately.
   if (rnrBackoffIdx.has_value()) {
+    const Duration backoff = rnrFieldToDuration(*rnrBackoffIdx);
+    rnrBackoffEnd_ = simCtx_->now() + backoff;
     rnrEvent_.cancel();
     rnrEvent_ = simCtx_->schedule(
-        rnrFieldToDuration(*rnrBackoffIdx),
-        &ErrorRecoverySocket::wakeupForSend,
-        socket_);
+        backoff, &ErrorRecoverySocket::wakeupForSend, socket_);
   } else {
     socket_->wakeupForSend();
   }

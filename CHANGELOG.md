@@ -124,6 +124,10 @@ on `main` has the detail.
   (`Transport::nicDatapath`), and an owner that sets payload latencies by
   address gives them to `SimpleNicDatapath`
   (`SimpleNicDatapath::PayloadLatencyFns`).
+- `Scheduler::getTimeUntilEvent` in `packsim/kernel/scheduler.h` and
+  `SimContext::getTimeUntilEvent` in `packsim/kernel/sim-context.h`, which
+  nothing in PackSim calls any more. A pending event's due time is still on its
+  handle, `Scheduler::EventHandle::getEventTimeFs()`.
 
 ### Fixed
 

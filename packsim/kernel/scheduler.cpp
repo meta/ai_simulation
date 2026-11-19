@@ -78,14 +78,6 @@ uint64_t Scheduler::getTotalEvents() {
   return engine_->getEventsExecuted();
 }
 
-Time Scheduler::getTimeUntilEvent(const EventHandle& event) {
-  const auto timeFs = event.getEventTimeFs();
-  if (timeFs == 0) {
-    return Time(0);
-  }
-  return Time(timeFs - engine_->nowFs());
-}
-
 Time Scheduler::timeNow() {
   const auto timeFs = engine_->nowFs();
   return Time(timeFs);

@@ -359,6 +359,38 @@ TEST_F(GoBackNRecoveryTest, RetransmitTimeoutEventuallyFailsRecovery) {
   EXPECT_EQ(socket_.wakeupCalls, wakeupCalls);
 }
 
+TEST_F(GoBackNRecoveryTest, FailureKeepsSendBlockedUntilRnrBackoffEnds) {
+  GoBackNRecovery recovery(
+      /*rnrTimeIdx=*/0,
+      socket_,
+      simCtx_,
+      GoBackNRecovery::Options{
+          .inOrderDelivery = true,
+          .retransmitTimeout = Time::fromNs(1),
+          .maxRetransmitTimeoutAttempts = 1,
+      });
+  auto tail = makeSendInfo(/*psn=*/1, /*packetSize=*/100);
+  tail.isLastPkt = true;
+  recovery.onPacketScheduled(tail);
+  // RNR field 1 backs sends off for 10 us. The retransmit timer fires at 1 ns
+  // and fails recovery at 2 ns, which cancels the back-off's wakeup.
+  recovery.onNack(/*expectedPsn=*/1, /*rnrBackoffIdx=*/uint8_t{1});
+  bool blockedAfterFailure = false;
+  simCtx_.schedule(Time::fromNs(5), [&] {
+    blockedAfterFailure = recovery.isFailed() && recovery.isSendBlocked();
+  });
+  bool blockedAtBackoffEnd = true;
+  simCtx_.schedule(Time::fromUs(10), [&] {
+    blockedAtBackoffEnd = recovery.isSendBlocked();
+  });
+
+  scheduler_.run();
+
+  EXPECT_TRUE(blockedAfterFailure);
+  EXPECT_FALSE(blockedAtBackoffEnd);
+  EXPECT_EQ(socket_.wakeupCalls, 1u);
+}
+
 TEST_F(
     GoBackNRecoveryTest,
     InOrderDeliveryCompletesCumulativelyCoveredMessages) {

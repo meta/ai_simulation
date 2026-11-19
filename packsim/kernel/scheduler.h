@@ -124,8 +124,6 @@ class Scheduler {
 
   Time timeNow();
 
-  Time getTimeUntilEvent(const EventHandle& event);
-
   void run();
 
   /**

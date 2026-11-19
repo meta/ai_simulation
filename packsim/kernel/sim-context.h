@@ -148,10 +148,6 @@ struct SimContext : public ::packsim::pdes::SimulationContext {
         std::forward<TArgs>(args)...);
   }
 
-  Time getTimeUntilEvent(const Scheduler::EventHandle& event) {
-    return scheduler_->getTimeUntilEvent(event);
-  }
-
   Time getLookaheadTime() const {
     return scheduler_->getLookaheadTime();
   }

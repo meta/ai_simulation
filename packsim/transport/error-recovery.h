@@ -335,7 +335,8 @@ class GoBackNRecovery final : public ErrorRecovery {
   GoBackNRecovery(GoBackNRecovery&&) = delete;
   GoBackNRecovery& operator=(GoBackNRecovery&&) = delete;
 
-  // True while an RNR back-off timer is scheduled (socket should skip).
+  // True until the latest RNR back-off ends (socket should skip), even after
+  // failRecovery() cancels its wakeup.
   bool isSendBlocked() const override;
 
   /**
@@ -473,6 +474,9 @@ class GoBackNRecovery final : public ErrorRecovery {
   Scheduler::EventHandle retransmitEvent_;
   Scheduler::EventHandle nackEvent_;
   Scheduler::EventHandle rnrEvent_;
+  // When the latest RNR back-off ends. Kept apart from rnrEvent_, so
+  // cancelling the wake-up in failRecovery() cannot change it.
+  Time rnrBackoffEnd_;
   uint8_t rnrTimeIdx_;
 };
 
