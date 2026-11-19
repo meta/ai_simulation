@@ -210,41 +210,36 @@ TEST_F(LlrTimersTest, DataAgeTimerExpiresFlushes) {
 }
 
 // A disabled data_age_timer (empty `dataAgeTimerMax`, thrift `0`) is never
-// armed, so the ACKs that restart an armed one leave no event in the queue.
-TEST_F(LlrTimersTest, DisabledDataAgeTimerLeavesNoEventPerAck) {
-  auto config = defaultConfig();
-  config.dataAgeTimerMax = std::nullopt;
-  Llr llr(&ctx(), config);
-  test::wireNoopSchedulerWake(llr);
-  bindCtlosCapture(llr);
-  wireSource(llr);
-  bringToAdvance(llr);
-
-  uint32_t nextSeq = 0;
-  const auto sendAndAck = [&] {
+// armed: sending a frame, which arms an enabled one, queues one event fewer.
+TEST_F(LlrTimersTest, DisabledDataAgeTimerIsNeverArmed) {
+  // Events that sending one frame adds to the queue under `config`.
+  const auto eventsAddedBySend = [this](const LlrConfig& config) {
+    Llr llr(&ctx(), config);
+    test::wireNoopSchedulerWake(llr);
+    bindCtlosCapture(llr);
+    wireSource(llr);
+    bringToAdvance(llr);
+    const auto queuedBefore = static_cast<int64_t>(ctx().eventQ.size());
     EXPECT_TRUE(txAndCapture(llr, makePacket(100)));
+    // The send's events wait in a backlog until the next frame queues them.
     scheduler().run(Time::fromUs(1));
-    llr.rxCtlos(LlrCtlosType::LLR_ACK, /*seq=*/nextSeq, /*initData=*/0);
-    ++nextSeq;
-    scheduler().run(Time::fromUs(1));
+    // Started anyway, a disabled timer would expire at once (its length is 0)
+    // and send the link back to INIT.
+    EXPECT_EQ(llr.txState(), TxState::ADVANCE);
+    const auto added = static_cast<int64_t>(ctx().eventQ.size()) - queuedBefore;
+    llr.shutdown();
+    // Bounded: draining to empty would simulate up to the latest queued event,
+    // an hour away if a long timer was armed.
+    scheduler().run(Time::fromUs(20));
+    return added;
   };
-  // Each count is taken past replayTimerMax (10us), once the replay_timer
-  // events the ACKs cancelled have been discarded.
-  sendAndAck();
-  scheduler().run(Time::fromUs(20));
-  const auto queuedBefore = ctx().eventQ.size();
+  auto disabled = defaultConfig();
+  disabled.dataAgeTimerMax = std::nullopt;
 
-  constexpr uint32_t kAcks = 100;
-  for (uint32_t i = 0; i < kAcks; ++i) {
-    sendAndAck();
-  }
-  scheduler().run(Time::fromUs(20));
+  const int64_t addedWhenDisabled = eventsAddedBySend(disabled);
+  const int64_t addedWhenEnabled = eventsAddedBySend(defaultConfig());
 
-  EXPECT_EQ(ctx().eventQ.size(), queuedBefore);
-  llr.shutdown();
-  // Bounded: draining to empty would simulate up to the latest queued event,
-  // an hour away if a long timer was armed, instead of failing above.
-  scheduler().run(Time::fromUs(20));
+  EXPECT_EQ(addedWhenDisabled + 1, addedWhenEnabled);
 }
 
 // pcs_lost_status_timer: only runs in ADVANCE/REPLAY when PCS_status=FALSE.
