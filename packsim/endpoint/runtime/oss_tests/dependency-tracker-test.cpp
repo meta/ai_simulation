@@ -81,8 +81,7 @@ TEST(DependencyTracker, TestTriggerDependents) {
           {{4, {0, 1, 2, 3}}, {5, {1, 2, 3}}, {6, {4, 5}}, {7, {4, 5}}},
   };
 
-  folly::F14FastMap<uint32_t /* workload ID */, std::unique_ptr<WorkloadRank>>
-      workloads;
+  DependencyTracker::NodeWorkloadMap workloads;
 
   Scheduler scheduler;
   SimContext simCtx{&scheduler, 0};
@@ -99,7 +98,7 @@ TEST(DependencyTracker, TestTriggerDependents) {
       .rccb = rccb};
 
   for (uint32_t i = 1; i <= 6; ++i) {
-    workloads.emplace(i, std::make_unique<MockWorkloadRank>(params));
+    workloads[i].emplace(0, std::make_unique<MockWorkloadRank>(params));
   }
 
   MockFunction<void(uint32_t /* workload ID */)> triggerWorkloadCb;
@@ -151,8 +150,7 @@ TEST(DependencyTracker, TestTriggerDependents) {
 }
 
 TEST(DependencyTracker, TestFilterDagWorkloadMapByNodeWorkloads) {
-  folly::F14FastMap<uint32_t /* workload ID */, std::unique_ptr<WorkloadRank>>
-      workloads;
+  DependencyTracker::NodeWorkloadMap workloads;
 
   Scheduler scheduler;
   SimContext simCtx{&scheduler, 0};
@@ -169,7 +167,7 @@ TEST(DependencyTracker, TestFilterDagWorkloadMapByNodeWorkloads) {
       .rccb = rccb};
 
   for (uint32_t i = 1; i <= 10; ++i) {
-    workloads.emplace(i, std::make_unique<MockWorkloadRank>(params));
+    workloads[i].emplace(0, std::make_unique<MockWorkloadRank>(params));
   }
 
   DependencyInfos infos{
@@ -211,8 +209,7 @@ TEST(DependencyTracker, TestFilterDagWorkloadMapByNodeWorkloads) {
 }
 
 TEST(DependencyTracker, TestCheckAndTriggerNextIteration) {
-  folly::F14FastMap<uint32_t /* workload ID */, std::unique_ptr<WorkloadRank>>
-      workloads;
+  DependencyTracker::NodeWorkloadMap workloads;
 
   Scheduler scheduler;
   SimContext simCtx{&scheduler, 0};
@@ -227,12 +224,11 @@ TEST(DependencyTracker, TestCheckAndTriggerNextIteration) {
     WorkloadRankParams params{
         .simCtx = &simCtx,
         .workCfg = workCfgs.at(i),
+        .rank = i,
         .smcb = smcb,
         .rmcb = rmcb,
         .rccb = rccb};
-    auto [it, _] =
-        workloads.emplace(i, std::make_unique<MockWorkloadRank>(params));
-    it->second->rank_ = i;
+    workloads[i].emplace(i, std::make_unique<MockWorkloadRank>(params));
   }
 
   DependencyInfos infos{
@@ -414,6 +410,50 @@ TEST(DependencyTracker, TestCheckAndTriggerNextIteration) {
 
   checkAndTriggerNextIteration(/* workloadId= */ 2);
   EXPECT_THAT(dagIterations, UnorderedElementsAre(Pair(0, 5), Pair(1, 4)));
+}
+
+TEST(
+    DependencyTracker,
+    CheckAndTriggerNextIterationThrowsWhenAWorkloadHasTwoRanksOnTheNode) {
+  Scheduler scheduler;
+  SimContext simCtx{&scheduler, 0};
+  packsim::workload::thrift::Workload workCfg;
+  WorkloadRankParams::SubmitMessageFn smcb;
+  WorkloadRankParams::SubmitMessageFn rmcb;
+  WorkloadRankParams::OnRankCompleteCallback rccb;
+  DependencyTracker::NodeWorkloadMap workloads;
+  for (uint32_t rank = 0; rank < 2; ++rank) {
+    WorkloadRankParams params{
+        .simCtx = &simCtx,
+        .workCfg = workCfg,
+        .rank = rank,
+        .smcb = smcb,
+        .rmcb = rmcb,
+        .rccb = rccb};
+    workloads[1].emplace(rank, std::make_unique<MockWorkloadRank>(params));
+  }
+  DependencyInfos infos;
+  infos.workloadToDagId.emplace(1, 0);
+  DependencyTracker::WorkloadDependencyMap workloadIdDependencies;
+  DependencyTracker::DagWorkloadMap dagToWorkloadIds;
+  auto mockGlobalDagCoordinator =
+      std::make_unique<MockGlobalDagCoordinator>(&scheduler, 0, 0);
+
+  EXPECT_THAT(
+      [&]() {
+        DependencyTracker::checkAndTriggerNextIteration(
+            &simCtx,
+            mockGlobalDagCoordinator.get(),
+            workloadIdDependencies,
+            dagToWorkloadIds,
+            /*workloadId=*/1,
+            infos,
+            workloads,
+            /*triggerWorkloadFn=*/{},
+            /*buildWorkloadFn=*/{});
+      },
+      ThrowsMessage<std::invalid_argument>(
+          HasSubstr("Workload 1 has 2 ranks on one node")));
 }
 
 } // namespace packsim

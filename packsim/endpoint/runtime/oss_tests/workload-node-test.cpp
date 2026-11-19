@@ -19,6 +19,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "packsim/endpoint/runtime/collective-barrier.h"
 #include "packsim/endpoint/runtime/message-tracker.h"
 #include "packsim/endpoint/runtime/oss_tests/workload-node-test-fixture.h"
 #include "packsim/if/gen-cpp2/config_types.h"
@@ -31,6 +32,7 @@
 #include "packsim/transport/transport.h"
 #include "packsim/workloads/rank/workload-rank.h"
 
+using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::Not;
 using ::testing::ThrowsMessage;
@@ -271,16 +273,16 @@ TEST_F(
           "of its 2 endpoints")));
 }
 
-class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
+class WorkloadNodeRankRoutingTest : public WorkloadNodeMessageTrackerTest {
  protected:
   enum class AckDisposition {
     CONSUME,
     FALL_THROUGH,
   };
 
-  class AckRoutingRank final : public WorkloadRank {
+  class RoutingRank final : public WorkloadRank {
    public:
-    AckRoutingRank(
+    RoutingRank(
         const WorkloadRankParams& params,
         const AckDisposition disposition)
         : WorkloadRank(params), disposition_(disposition) {
@@ -296,7 +298,11 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
       });
     }
 
-    void run() override {}
+    void run() override {
+      if (runLog != nullptr) {
+        runLog->emplace_back(rank_);
+      }
+    }
 
     bool tryHandleTransportAck(Message* msg) override {
       ++tryHandleCount;
@@ -341,6 +347,9 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
     // The same when the generic receive handler last ran.
     uint64_t receivedResultInError{0};
 
+    // When set, run() appends this rank's number to it.
+    std::vector<uint32_t>* runLog{nullptr};
+
    private:
     // The count in the result that onWorkloadComplete would take if the rank
     // completed at this point.
@@ -351,10 +360,11 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
     const AckDisposition disposition_;
   };
 
-  AckRoutingRank* installRank(
+  RoutingRank* installRank(
       WorkloadNode& node,
-      const AckDisposition disposition) {
-    workload_.name() = "ack_routing";
+      const AckDisposition disposition,
+      const uint32_t rank = 0) {
+    workload_.name() = "rank_routing";
     workload_.workloadId() = kWorkloadId;
     workload_.numEndpoints() = 1;
     const WorkloadRankParams::SubmitMessageFn messageCb = [](Message*) {};
@@ -364,15 +374,21 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
         .simCtx = &simCtx_,
         .workloadId = kWorkloadId,
         .workCfg = workload_,
-        .rank = 0,
+        .rank = rank,
         .smcb = messageCb,
         .rmcb = messageCb,
         .rccb = completeCb,
         .parent = nullptr};
-    auto rank = std::make_unique<AckRoutingRank>(params, disposition);
-    auto* rankPtr = rank.get();
-    node.workloads_.emplace(kWorkloadId, std::move(rank));
+    auto routingRank = std::make_unique<RoutingRank>(params, disposition);
+    auto* rankPtr = routingRank.get();
+    node.workloads_[kWorkloadId].emplace(rank, std::move(routingRank));
     return rankPtr;
+  }
+
+  // Marks `rank` as still running, as buildWorkloadRank does for a rank it
+  // builds.
+  static void markRunning(WorkloadNode& node, const uint32_t rank) {
+    node.pendingRanks_[kWorkloadId].emplace(rank);
   }
 
   static constexpr uint32_t kWorkloadId = 17;
@@ -380,7 +396,7 @@ class WorkloadNodeAckRoutingTest : public WorkloadNodeMessageTrackerTest {
   packsim::workload::thrift::Workload workload_;
 };
 
-TEST_F(WorkloadNodeAckRoutingTest, ClaimedAckSkipsGenericHandler) {
+TEST_F(WorkloadNodeRankRoutingTest, ClaimedAckSkipsGenericHandler) {
   auto node = createWorkloadNode();
   ASSERT_NE(node, nullptr);
   auto* rank = installRank(*node, AckDisposition::CONSUME);
@@ -394,7 +410,7 @@ TEST_F(WorkloadNodeAckRoutingTest, ClaimedAckSkipsGenericHandler) {
   EXPECT_EQ(rank->fallbackCount, 0u);
 }
 
-TEST_F(WorkloadNodeAckRoutingTest, UnclaimedAckFallsThroughToGenericHandler) {
+TEST_F(WorkloadNodeRankRoutingTest, UnclaimedAckFallsThroughToGenericHandler) {
   auto node = createWorkloadNode();
   ASSERT_NE(node, nullptr);
   auto* rank = installRank(*node, AckDisposition::FALL_THROUGH);
@@ -409,9 +425,9 @@ TEST_F(WorkloadNodeAckRoutingTest, UnclaimedAckFallsThroughToGenericHandler) {
   EXPECT_EQ(rank->fallbackMessage, &msg);
 }
 
-// The counts of messages completed in error reuse the ACK-routing fixture's
+// The counts of messages completed in error reuse the rank-routing fixture's
 // rank, which records what reaches each of its handlers.
-using WorkloadNodeCompletionStatusTest = WorkloadNodeAckRoutingTest;
+using WorkloadNodeCompletionStatusTest = WorkloadNodeRankRoutingTest;
 
 // A handler can complete the rank, which takes the rank's result at once, so
 // an acknowledgment completed in error is counted before any handler sees it.
@@ -538,6 +554,242 @@ TEST_F(
   EXPECT_EQ(rank->receivedCount, 0u);
   EXPECT_EQ(rank->tryHandleCount, 0u);
   EXPECT_EQ(*rank->getThriftResult().messagesCompletedInError(), 0u);
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    ReceiveGoesToTheRankItNamesWhenTheWorkloadHasTwoRanksHere) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank0 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/0);
+  auto* rank1 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/1);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.srcRank = 0;
+  msg.dstRank = 1;
+
+  node->onMessageReceived(&msg);
+
+  EXPECT_EQ(rank1->receivedCount, 1u);
+  EXPECT_EQ(rank1->receivedMessage, &msg);
+  EXPECT_EQ(rank0->receivedCount, 0u);
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    AckGoesToTheSendingRankWhenTheWorkloadHasTwoRanksHere) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank0 = installRank(*node, AckDisposition::CONSUME, /*rank=*/0);
+  auto* rank1 = installRank(*node, AckDisposition::CONSUME, /*rank=*/1);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.srcRank = 1;
+  msg.dstRank = 0;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(rank1->tryHandleCount, 1u);
+  EXPECT_EQ(rank1->tryHandleMessage, &msg);
+  EXPECT_EQ(rank0->tryHandleCount, 0u);
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    AckForAFinishedRankReachesItWhileTheOtherRankRuns) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  uint32_t allCompleteCount = 0;
+  node->setOnAllWorkloadsCompleteCallback(
+      [&](const FlexDeviceId& /* id */) { ++allCompleteCount; });
+  auto* rank0 = installRank(*node, AckDisposition::CONSUME, /*rank=*/0);
+  auto* rank1 = installRank(*node, AckDisposition::CONSUME, /*rank=*/1);
+  markRunning(*node, /*rank=*/0);
+  markRunning(*node, /*rank=*/1);
+  node->onWorkloadComplete(kWorkloadId, /*rank=*/0);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.srcRank = 0;
+  msg.dstRank = 1;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(rank0->tryHandleCount, 1u);
+  EXPECT_EQ(rank0->tryHandleMessage, &msg);
+  EXPECT_EQ(rank1->tryHandleCount, 0u);
+  EXPECT_EQ(allCompleteCount, 0u);
+}
+
+// A READ's srcRank is the peer it reads from; it completes at its dstRank, the
+// rank that posted it.
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    ReadCompletionGoesToTheReadingRankWhenTheWorkloadHasTwoRanksHere) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank0 = installRank(*node, AckDisposition::CONSUME, /*rank=*/0);
+  auto* rank1 = installRank(*node, AckDisposition::CONSUME, /*rank=*/1);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.isRead = true;
+  msg.srcRank = 0;
+  msg.dstRank = 1;
+
+  node->onMessageAcked(&msg);
+
+  EXPECT_EQ(rank1->tryHandleCount, 1u);
+  EXPECT_EQ(rank1->tryHandleMessage, &msg);
+  EXPECT_EQ(rank0->tryHandleCount, 0u);
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    MessageNamingNoRankHereThrowsWhenTheWorkloadHasTwoRanksHere) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/0);
+  installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/1);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.dstRank = 5;
+
+  EXPECT_THAT(
+      [&]() { node->onMessageReceived(&msg); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("workload 17 has no rank 5 on this node")));
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    MessageNamingNoRankHereThrowsWhenTheWorkloadHasOneRankHere) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/0);
+  Message msg;
+  msg.workloadId = kWorkloadId;
+  msg.dstRank = 3;
+
+  EXPECT_THAT(
+      [&]() { node->onMessageReceived(&msg); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("workload 17 has no rank 3 on this node")));
+}
+
+TEST_F(
+    WorkloadNodeRankRoutingTest,
+    RunningAWorkloadStartsEachOfItsRanksHereInRankOrder) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank1 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/1);
+  auto* rank0 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/0);
+  std::vector<uint32_t> runOrder;
+  rank0->runLog = &runOrder;
+  rank1->runLog = &runOrder;
+
+  node->runWorkload(kWorkloadId);
+  scheduler_.run();
+
+  EXPECT_THAT(runOrder, ElementsAre(0u, 1u));
+}
+
+TEST_F(WorkloadNodeRankRoutingTest, GetWorkloadsListsEachRankHereInRankOrder) {
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  auto* rank1 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/1);
+  auto* rank0 = installRank(*node, AckDisposition::FALL_THROUGH, /*rank=*/0);
+
+  EXPECT_THAT(node->getWorkloads(), ElementsAre(rank0, rank1));
+}
+
+class WorkloadNodeRankCompletionTest : public WorkloadNodeMessageTrackerTest {
+ protected:
+  void SetUp() override {
+    WorkloadNodeMessageTrackerTest::SetUp();
+    workload_.name() = "two_ranks_on_one_node";
+    workload_.workloadId() = kWorkloadId;
+    workload_.numEndpoints() = 2;
+    workload_.config()->compute() = packsim::workload::thrift::Compute();
+    node_ = createWorkloadNode();
+    node_->setOnAllWorkloadsCompleteCallback(
+        [this](const FlexDeviceId& /* id */) { ++allCompleteCount_; });
+    node_->buildWorkloadRank(workload_, /*rank=*/0);
+    node_->buildWorkloadRank(workload_, /*rank=*/1);
+  }
+
+  static constexpr uint32_t kWorkloadId = 23;
+
+  packsim::workload::thrift::Workload workload_;
+  std::unique_ptr<WorkloadNode> node_;
+  // Times the node reported that no rank is left pending.
+  uint32_t allCompleteCount_{0};
+};
+
+TEST_F(
+    WorkloadNodeRankCompletionTest,
+    FirstOfTwoRanksFinishingLeavesTheNodeIncomplete) {
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/0);
+
+  EXPECT_EQ(allCompleteCount_, 0u);
+}
+
+TEST_F(
+    WorkloadNodeRankCompletionTest,
+    LastOfTwoRanksFinishingCompletesTheNode) {
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/0);
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/1);
+
+  EXPECT_EQ(allCompleteCount_, 1u);
+}
+
+TEST_F(WorkloadNodeRankCompletionTest, EachFinishingRankRecordsItsOwnResult) {
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/1);
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/0);
+
+  std::vector<uint32_t> resultRanks;
+  for (const auto& result : node_->getWorkloadRankResults()) {
+    resultRanks.emplace_back(*result.rank());
+  }
+  EXPECT_THAT(resultRanks, ElementsAre(1u, 0u));
+}
+
+TEST_F(WorkloadNodeRankCompletionTest, FinishingARankTwiceThrows) {
+  node_->onWorkloadComplete(kWorkloadId, /*rank=*/0);
+
+  EXPECT_THAT(
+      [&]() { node_->onWorkloadComplete(kWorkloadId, /*rank=*/0); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("Workload 23 rank 0 was already completed")));
+}
+
+TEST_F(WorkloadNodeRankCompletionTest, BuildingARankThatIsStillRunningThrows) {
+  EXPECT_THAT(
+      [&]() { node_->buildWorkloadRank(workload_, /*rank=*/1); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("Workload 23 rank 1 is currently active")));
+}
+
+using WorkloadNodeBarrierTest = WorkloadNodeMessageTrackerTest;
+
+TEST_F(WorkloadNodeBarrierTest, SecondBarrierForAWorkloadThrows) {
+  constexpr uint32_t kWorkloadId = 29;
+  auto node = createWorkloadNode();
+  ASSERT_NE(node, nullptr);
+  packsim::workload::thrift::Workload workload;
+  workload.workloadId() = kWorkloadId;
+  node->setCollectiveBarrier(
+      kWorkloadId,
+      std::make_unique<CollectiveBarrier>(
+          &simCtx_, &simCtx_, /*rank=*/0, &workload));
+
+  EXPECT_THAT(
+      [&]() {
+        node->setCollectiveBarrier(
+            kWorkloadId,
+            std::make_unique<CollectiveBarrier>(
+                &simCtx_, &simCtx_, /*rank=*/1, &workload));
+      },
+      ThrowsMessage<std::invalid_argument>(
+          HasSubstr("workload 29 already has a barrier on this node")));
 }
 
 TEST_F(

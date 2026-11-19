@@ -9,10 +9,12 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <vector>
 
+#include <folly/CppAttributes.h>
 #include <folly/container/F14Map.h>
 
 #include "packsim/endpoint/runtime/global-dag-coordinator.h"
@@ -83,11 +85,20 @@ class DependencyTracker {
       uint32_t /* DAG ID */,
       folly::F14FastSet<uint32_t /* workload ID */>>;
 
+  // The ranks a node hosts. Ordered by rank so that a workload's ranks start
+  // in the same order on every run. A workload in a DAG places at most one
+  // rank on a node. A value map rather than F14FastMap, which is a vector map
+  // for a value this size: that visits a node's workloads in another order once
+  // it holds 15 or more, and the order breaks ties between workloads that start
+  // at the same time.
+  using NodeWorkloadMap = folly::F14ValueMap<
+      uint32_t /* workload ID */,
+      std::map<uint32_t /* rank */, std::unique_ptr<packsim::WorkloadRank>>>;
+
   /**
    * Constructs a DependencyTracker for managing workload dependencies.
    *
-   * @param workloads                Map of workload ID to WorkloadRank
-   * instances
+   * @param workloads                Ranks hosted on this node
    * @param infos                    Dependency information for all workloads
    * @param triggerWorkloadFn        Starts a workload whose dependencies
    * are satisfied
@@ -98,8 +109,7 @@ class DependencyTracker {
    * @param simCtx                   Simulation context
    */
   DependencyTracker(
-      folly::F14FastMap<uint32_t, std::unique_ptr<packsim::WorkloadRank>> const&
-          workloads,
+      NodeWorkloadMap const& workloads,
       DependencyInfos const& infos,
       TriggerWorkloadFn const& triggerWorkloadFn,
       BuildWorkloadFn const& buildWorkloadFn,
@@ -110,6 +120,8 @@ class DependencyTracker {
    * Notifies the tracker that a workload has completed.
    *
    * @param workloadId The ID of the completed workload
+   * @throw std::invalid_argument if minIterationsPerDag is set and a workload
+   * in a DAG has more than one rank on this node
    */
   void postWorkloadCompletion(uint32_t const workloadId);
 
@@ -130,9 +142,7 @@ class DependencyTracker {
    */
   static WorkloadDependencyMap filterDependencyMapByNodeWorkloads(
       WorkloadDependencyMap const& originalDepMap,
-      folly::F14FastMap<
-          uint32_t /* workload ID */,
-          std::unique_ptr<packsim::WorkloadRank>> const& nodeWorkloads);
+      NodeWorkloadMap const& nodeWorkloads);
 
   /**
    * Filters a DAG-to-workload map to include only node-local workloads.
@@ -143,9 +153,7 @@ class DependencyTracker {
    */
   static DagWorkloadMap filterDagWorkloadMapByNodeWorkloads(
       DependencyInfos const& infos,
-      folly::F14FastMap<
-          uint32_t /* workload ID */,
-          std::unique_ptr<packsim::WorkloadRank>> const& nodeWorkloads);
+      NodeWorkloadMap const& nodeWorkloads);
 
   /**
    * Checks if a DAG iteration is complete and triggers the next iteration if
@@ -157,12 +165,14 @@ class DependencyTracker {
    * @param dagToWorkloadIds          Map of DAG IDs to workload IDs
    * @param workloadId                The workload ID that just completed
    * @param infos                     Dependency information
-   * @param workloads                 Map of workload ID to WorkloadRank
-   * instances
+   * @param workloads                 Ranks hosted on this node, one per
+   * workload
    * @param triggerWorkloadFn         Starts a workload whose dependencies
    * are satisfied
    * @param buildWorkloadFn           Rebuilds a workload rank for the next
    * iteration
+   * @throw std::invalid_argument if a workload in a DAG has more than one rank
+   * on this node
    */
   static void checkAndTriggerNextIteration(
       SimContext* FOLLY_NONNULL simCtx,
@@ -171,17 +181,13 @@ class DependencyTracker {
       DagWorkloadMap& dagToWorkloadIds,
       uint32_t const workloadId,
       DependencyInfos const& infos,
-      folly::F14FastMap<
-          uint32_t /* workload ID */,
-          std::unique_ptr<packsim::WorkloadRank>> const& workloads,
+      NodeWorkloadMap const& workloads,
       TriggerWorkloadFn const& triggerWorkloadFn,
       BuildWorkloadFn const& buildWorkloadFn);
 
  private:
-  // Reference to all workloads in the simulation
-  folly::F14FastMap<
-      uint32_t /* workload ID */,
-      std::unique_ptr<packsim::WorkloadRank>> const& workloads_;
+  // Reference to the ranks hosted on this node
+  NodeWorkloadMap const& workloads_;
   // Reference to dependency information
   DependencyInfos const& infos_;
   // Starts a workload whose dependencies are satisfied.

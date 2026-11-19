@@ -17,9 +17,34 @@
 
 namespace packsim {
 
+namespace {
+/**
+ * The one rank that @p workloadId has on this node. A workload in a DAG places
+ * at most one rank on a node.
+ *
+ * @param workloads   The ranks hosted on this node
+ * @param workloadId  A workload with a rank on this node
+ * @return            That rank
+ * @throw std::invalid_argument if the workload has more than one rank here
+ */
+const WorkloadRank* FOLLY_NONNULL getOnlyRank(
+    DependencyTracker::NodeWorkloadMap const& workloads,
+    uint32_t const workloadId) {
+  const auto& ranks = workloads.at(workloadId);
+  if (ranks.size() != 1) {
+    throw std::invalid_argument(
+        fmt::format(
+            "Workload {} has {} ranks on one node, but a workload in a DAG may "
+            "place only one",
+            workloadId,
+            ranks.size()));
+  }
+  return ranks.begin()->second.get();
+}
+} // namespace
+
 DependencyTracker::DependencyTracker(
-    folly::F14FastMap<uint32_t, std::unique_ptr<packsim::WorkloadRank>> const&
-        workloads,
+    NodeWorkloadMap const& workloads,
     DependencyInfos const& infos,
     DependencyTracker::TriggerWorkloadFn const& triggerWorkloadFn,
     DependencyTracker::BuildWorkloadFn const& buildWorkloadFn,
@@ -83,9 +108,7 @@ const DependencyInfos* DependencyTracker::getDependencyInfos() const {
 DependencyTracker::WorkloadDependencyMap
 DependencyTracker::filterDependencyMapByNodeWorkloads(
     WorkloadDependencyMap const& originalDepMap,
-    folly::F14FastMap<
-        uint32_t /* workload ID */,
-        std::unique_ptr<packsim::WorkloadRank>> const& nodeWorkloads) {
+    NodeWorkloadMap const& nodeWorkloads) {
   WorkloadDependencyMap depMap;
   for (auto const& [workloadId, dependencyWorkloadIds] : originalDepMap) {
     if (!nodeWorkloads.contains(workloadId)) {
@@ -107,9 +130,7 @@ DependencyTracker::filterDependencyMapByNodeWorkloads(
 DependencyTracker::DagWorkloadMap
 DependencyTracker::filterDagWorkloadMapByNodeWorkloads(
     DependencyInfos const& infos,
-    folly::F14FastMap<
-        uint32_t /* workload ID */,
-        std::unique_ptr<packsim::WorkloadRank>> const& nodeWorkloads) {
+    NodeWorkloadMap const& nodeWorkloads) {
   DagWorkloadMap dagMap;
   for (auto const& [workloadId, _] : nodeWorkloads) {
     if (!infos.workloadToDagId.contains(workloadId)) {
@@ -129,12 +150,10 @@ void DependencyTracker::checkAndTriggerNextIteration(
     DagWorkloadMap& dagToWorkloadIds,
     uint32_t const workloadId,
     DependencyInfos const& infos,
-    folly::F14FastMap<
-        uint32_t /* workload ID */,
-        std::unique_ptr<packsim::WorkloadRank>> const& workloads,
+    NodeWorkloadMap const& workloads,
     DependencyTracker::TriggerWorkloadFn const& triggerWorkloadFn,
     DependencyTracker::BuildWorkloadFn const& buildWorkloadFn) {
-  const auto* workloadRank = workloads.at(workloadId).get();
+  const auto* workloadRank = getOnlyRank(workloads, workloadId);
   XLOGF(
       DBG, "Workload ID {} rank {} completed", workloadId, workloadRank->rank_);
   if (infos.workloadToDagId.contains(workloadId)) {
@@ -172,7 +191,7 @@ void DependencyTracker::checkAndTriggerNextIteration(
               }
               dagToWorkloadIds[dagId] = dagWorkloadIds;
               for (auto const dagWorkloadId : dagWorkloadIds) {
-                auto const workload = workloads.at(dagWorkloadId).get();
+                auto const workload = getOnlyRank(workloads, dagWorkloadId);
                 buildWorkloadFn(
                     *workload->workCfg_,
                     workload->rank_,

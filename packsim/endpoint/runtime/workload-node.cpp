@@ -193,24 +193,36 @@ void WorkloadNode::setDependencyInfos(
 void WorkloadNode::setCollectiveBarrier(
     const uint32_t workloadId,
     std::unique_ptr<CollectiveBarrier> barrier) {
-  workloadBarrier_[workloadId] = std::move(barrier);
+  // A barrier stands for one rank and the leader waits for every rank's, so
+  // replacing one would hang the workload, or free the leader's barrier while
+  // the other ranks' barriers still point at it.
+  if (workloadBarrier_.contains(workloadId)) {
+    throw std::invalid_argument(
+        fmt::format(
+            "{}: workload {} already has a barrier on this node; a workload in "
+            "a DAG may place only one rank on a node",
+            name_,
+            workloadId));
+  }
+  workloadBarrier_.emplace(workloadId, std::move(barrier));
 }
 
 void WorkloadNode::startWorkloads() {
-  for (const auto& [workloadId, workloadRank] : workloads_) {
+  for (const auto& [workloadId, ranks] : workloads_) {
     if (dt_ &&
         dt_->getDependencyInfos()->workloadIdDependencies.contains(
             workloadId)) {
       continue;
     }
-    runWorkload(workloadId, *workloadRank->workCfg_->startTimeNs());
+    runWorkload(workloadId, *ranks.begin()->second->workCfg_->startTimeNs());
   }
 }
 
 void WorkloadNode::runWorkload(
     const uint32_t workloadId,
     const uint64_t delayNs) {
-  if (!workloads_.contains(workloadId)) {
+  const auto it = workloads_.find(workloadId);
+  if (it == workloads_.end()) {
     throw std::runtime_error(
         fmt::format(
             "Workload ID {} does not exist on workload node {} and "
@@ -218,10 +230,10 @@ void WorkloadNode::runWorkload(
             workloadId,
             name_));
   }
-  simCtx_->schedule(
-      Time::fromNs(delayNs),
-      &WorkloadRank::run,
-      workloads_.at(workloadId).get());
+  for (const auto& [_, workloadRank] : it->second) {
+    simCtx_->schedule(
+        Time::fromNs(delayNs), &WorkloadRank::run, workloadRank.get());
+  }
 }
 
 void WorkloadNode::addPort(
@@ -266,21 +278,23 @@ void WorkloadNode::buildWorkloadRank(
     const packsim::workload::thrift::Workload& wCfg,
     const uint32_t rank,
     const uint32_t iteration) {
-  if (pendingWorkloads_.contains(*wCfg.workloadId())) {
+  const uint32_t workloadId = *wCfg.workloadId();
+  if (const auto it = pendingRanks_.find(workloadId);
+      it != pendingRanks_.end() && it->second.contains(rank)) {
     throw std::runtime_error(
         fmt::format(
             "Workload {} rank {} is currently active and cannot be overwritten/re-started.",
-            *wCfg.workloadId(),
+            workloadId,
             rank));
   }
-  pendingWorkloads_.emplace(*wCfg.workloadId());
+  pendingRanks_[workloadId].emplace(rank);
   const auto [smcb, rmcb, rccb] = genCallbacks();
   auto w = packsim::buildWorkloadRank(
-      simCtx_, *wCfg.workloadId(), wCfg, rank, smcb, rmcb, rccb);
+      simCtx_, workloadId, wCfg, rank, smcb, rmcb, rccb);
   w->setIteration(iteration);
   onRankBuilt(*w, wCfg);
   simCtx_->dataRcvdExpected += w->getExpectedBytes();
-  workloads_[*wCfg.workloadId()] = std::move(w);
+  workloads_[workloadId][rank] = std::move(w);
 }
 
 void WorkloadNode::makeSendRequest(packsim::Message* FOLLY_NONNULL msg) {
@@ -324,10 +338,10 @@ void WorkloadNode::onMessageReceived(packsim::Message* msg) {
     messageTracker_->recordRecv(msg, simCtx_->now().getNs());
   }
 
-  const auto it = workloads_.find(msg->workloadId);
-  if (it != workloads_.end()) {
-    it->second->recordCompletionStatus(*msg);
-    it->second->requestReceived(msg);
+  if (auto* const workloadRank =
+          findRankForMessage(msg->workloadId, msg->dstRank)) {
+    workloadRank->recordCompletionStatus(*msg);
+    workloadRank->requestReceived(msg);
   } else if (onMessageReceived_) {
     // Optional because nothing subscribes at all: no caller outside tests
     // invokes setOnMessageReceivedCallback on a node, so in production this
@@ -350,13 +364,16 @@ void WorkloadNode::onMessageAcked(packsim::Message* msg) {
     return;
   }
 
-  const auto it = workloads_.find(msg->workloadId);
-  if (it != workloads_.end()) {
-    it->second->recordCompletionStatus(*msg);
-    if (it->second->tryHandleTransportAck(msg)) {
+  // A READ completes at the rank that posted it, which is its dstRank; any
+  // other message is acknowledged to its sender.
+  const uint32_t ackedRank = msg->isRead ? msg->dstRank : msg->srcRank;
+  if (auto* const workloadRank =
+          findRankForMessage(msg->workloadId, ackedRank)) {
+    workloadRank->recordCompletionStatus(*msg);
+    if (workloadRank->tryHandleTransportAck(msg)) {
       return;
     }
-    it->second->requestAcked(msg);
+    workloadRank->requestAcked(msg);
   } else if (onMessageAcked_) {
     // Optional for the same reason as onMessageReceived: no production
     // subscriber, so this branch is unreachable outside tests.
@@ -369,19 +386,47 @@ void WorkloadNode::onMessageAcked(packsim::Message* msg) {
   }
 }
 
+WorkloadRank* FOLLY_NULLABLE WorkloadNode::findRankForMessage(
+    const uint32_t workloadId,
+    const uint32_t rank) const {
+  const auto it = workloads_.find(workloadId);
+  if (it == workloads_.end()) {
+    return nullptr;
+  }
+  const auto& ranks = it->second;
+  const auto rankIt = ranks.find(rank);
+  if (rankIt == ranks.end()) {
+    throw std::runtime_error(
+        fmt::format(
+            "{}: workload {} has no rank {} on this node",
+            name_,
+            workloadId,
+            rank));
+  }
+  return rankIt->second.get();
+}
+
 void WorkloadNode::onWorkloadComplete(
     const uint32_t workloadId,
     const uint32_t rank) {
-  if (!pendingWorkloads_.contains(workloadId)) {
+  const auto pendingIt = pendingRanks_.find(workloadId);
+  if (pendingIt == pendingRanks_.end() || !pendingIt->second.contains(rank)) {
     throw std::runtime_error(
         fmt::format(
             "Workload {} rank {} was already completed and not pending.",
             workloadId,
             rank));
   }
-  pendingWorkloads_.erase(workloadId);
+  // Only the pending set forgets a finished rank. It stays in workloads_, so a
+  // message that still names it, such as an ACK that arrives after it
+  // finished, reaches it and not another rank of its workload.
+  pendingIt->second.erase(rank);
   workloadRankResults_.emplace_back(
-      workloads_.at(workloadId)->getThriftResult());
+      workloads_.at(workloadId).at(rank)->getThriftResult());
+  if (!pendingIt->second.empty()) {
+    return;
+  }
+  pendingRanks_.erase(pendingIt);
 
   if (dt_) {
     if (workloadSocketInfos_.contains(workloadId)) {
@@ -395,7 +440,7 @@ void WorkloadNode::onWorkloadComplete(
     }
     dt_->postWorkloadCompletion(workloadId);
   }
-  if (pendingWorkloads_.empty()) {
+  if (pendingRanks_.empty()) {
     onAllWorkloadsComplete();
   }
 }

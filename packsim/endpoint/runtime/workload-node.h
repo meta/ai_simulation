@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -33,7 +34,9 @@
 namespace packsim {
 
 /**
- * WorkloadNode represents a node in the network that hosts workloads.
+ * WorkloadNode represents a node in the network that hosts workloads. It may
+ * host several ranks of one workload; each message then goes to the rank it
+ * names.
  */
 class WorkloadNode : public FlexNode {
  public:
@@ -93,11 +96,15 @@ class WorkloadNode : public FlexNode {
 
   /**
    * @param msg Message that was received
+   * @throw std::runtime_error if the workload has ranks on this node but none
+   * is the message's dstRank
    */
   void onMessageReceived(packsim::Message* msg);
 
   /**
-   * @param msg Message that was acknowledged
+   * @param msg Message that was acknowledged, or a READ that completed
+   * @throw std::runtime_error if the workload has ranks on this node but none
+   * is the rank the acknowledgement goes to (see findRankForMessage)
    */
   void onMessageAcked(packsim::Message* msg);
 
@@ -148,8 +155,12 @@ class WorkloadNode : public FlexNode {
   }
 
   /**
-   * @param workloadId ID of the completed workload
+   * Record that @p rank of @p workloadId finished. The workload counts as
+   * complete on this node once every rank it has here finishes.
+   *
+   * @param workloadId ID of the workload the rank belongs to
    * @param rank       Rank that completed
+   * @throw std::runtime_error if the rank is not pending on this node
    */
   void onWorkloadComplete(uint32_t workloadId, uint32_t rank);
 
@@ -164,6 +175,7 @@ class WorkloadNode : public FlexNode {
    * @param wCfg      Workload configuration
    * @param rank      Rank number
    * @param iteration Iteration count (default 1)
+   * @throw std::runtime_error if this rank of the workload is still running
    */
   void buildWorkloadRank(
       const packsim::workload::thrift::Workload& wCfg,
@@ -206,10 +218,16 @@ class WorkloadNode : public FlexNode {
    * @return Vector of all workload ranks managed by this node
    */
   std::vector<packsim::WorkloadRank*> getWorkloads() const {
+    size_t numRanks = 0;
+    for (const auto& [_, ranks] : workloads_) {
+      numRanks += ranks.size();
+    }
     std::vector<packsim::WorkloadRank*> ret;
-    ret.reserve(workloads_.size());
-    for (const auto& [_, workload] : workloads_) {
-      ret.emplace_back(workload.get());
+    ret.reserve(numRanks);
+    for (const auto& [_, ranks] : workloads_) {
+      for (const auto& [rank, workload] : ranks) {
+        ret.emplace_back(workload.get());
+      }
     }
     return ret;
   }
@@ -252,10 +270,12 @@ class WorkloadNode : public FlexNode {
   void startWorkloads();
 
   /**
-   * Schedule a workload to start at a certain delay relative to now.
+   * Schedule every rank of a workload on this node to start at a certain delay
+   * relative to now.
    *
    * @param workloadId ID of the workload to run
    * @param delayNs    Delay in nanoseconds (default 0)
+   * @throw std::runtime_error if the workload has no rank on this node
    */
   void runWorkload(const uint32_t workloadId, const uint64_t delayNs = 0);
 
@@ -264,6 +284,8 @@ class WorkloadNode : public FlexNode {
    *
    * @param workloadId ID of the workload
    * @param barrier    Collective barrier instance
+   * @throw std::invalid_argument if the workload already has a barrier here,
+   * which means it places more than one rank on this node
    */
   void setCollectiveBarrier(
       const uint32_t workloadId,
@@ -350,16 +372,33 @@ class WorkloadNode : public FlexNode {
       uint32_t localQPN);
 
  private:
-  // Test fixture that verifies rank-specific ACK routing and generic fallback.
-  friend class WorkloadNodeAckRoutingTest;
+  /**
+   * Find the rank on this node that takes a message of @p workloadId naming
+   * @p rank.
+   *
+   * @param workloadId Workload the message belongs to
+   * @param rank       Rank the message names: its receiver for a delivery or a
+   *                   READ's completion, its sender for any other
+   *                   acknowledgement
+   * @return           The rank, or nullptr when the workload has none here
+   * @throw std::runtime_error if the workload has ranks here but none of them
+   * is @p rank
+   */
+  WorkloadRank* FOLLY_NULLABLE
+  findRankForMessage(uint32_t workloadId, uint32_t rank) const;
+
+  // Test fixture that verifies routing messages to ranks.
+  friend class WorkloadNodeRankRoutingTest;
 
   std::vector<std::unique_ptr<Endpoint>> endpoints_;
 
-  folly::F14FastMap<uint32_t, std::unique_ptr<packsim::WorkloadRank>>
-      workloads_;
+  DependencyTracker::NodeWorkloadMap workloads_;
 
-  // Workload ranks that have been added to the node but not yet finished.
-  folly::F14FastSet<uint32_t /* workload ID */> pendingWorkloads_;
+  // Ranks that have been added to the node but not yet finished.
+  folly::F14FastMap<
+      uint32_t /* workload ID */,
+      folly::F14FastSet<uint32_t /* rank */>>
+      pendingRanks_;
 
   // Track the sockets created by various workloads. This is used to unregister
   // sockets once the workload completes.

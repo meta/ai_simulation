@@ -95,6 +95,14 @@ on `main` has the detail.
   more it is given back, so packets freed on switch threads return to the
   heap. Runs with link-layer retry need much less memory at higher thread
   counts; results do not change.
+- `WorkloadNode`, in `packsim/endpoint/runtime/workload-node.h`, can host
+  several ranks of one workload; it used to reject a second rank of a workload
+  on one node. A message goes to the rank it names, `dstRank` for a delivery
+  or a READ's completion and `srcRank` for any other acknowledgement, and the
+  workload completes on the node once every rank it has there has finished. A
+  workload in a DAG still places at most one rank on a node, and a second
+  collective barrier for it on one node is now rejected instead of replacing
+  the first. A node that holds one rank of each workload behaves as before.
 
 ### Removed
 
