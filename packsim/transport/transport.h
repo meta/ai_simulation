@@ -57,7 +57,8 @@ struct Message { // @oss-enable
     // timeout ran out while the message waited for a receive.
     RNR_RETRY_EXCEEDED,
     // The transport made no forward progress on the message's queue pair for
-    // as long as its timeout and retry count allow.
+    // as long as its timeout and retry count allow, or the message took longer
+    // to execute than the transport allows one message.
     RETRY_EXCEEDED,
     // The responder rejected the message as an invalid request, for example
     // a send longer than the receive posted for it.
