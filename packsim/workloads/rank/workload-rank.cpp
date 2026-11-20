@@ -16,6 +16,8 @@
 #include <folly/String.h>
 #include <folly/logging/xlog.h>
 
+// @oss-disable
+
 namespace packsim {
 
 using packsim::workload::thrift::NicPairToQPNList;
@@ -338,6 +340,7 @@ std::unique_ptr<Message> WorkloadRank::makeSendWithQPN(
   // @oss-disable
     // @oss-disable
     // @oss-disable
+  // @oss-disable
   // @oss-disable
   // @oss-disable
   return msg;

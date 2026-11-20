@@ -15,6 +15,7 @@
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
 #include "packsim/kernel/ceil-divide.h"
+// @oss-disable
 
 namespace packsim {
 
@@ -43,6 +44,10 @@ IncastRank::IncastRank(const WorkloadRankParams& params)
             "IncastRank only supports SENDRCV and PUSH modes, got {}",
             apache::thrift::util::enumNameSafe(workloadMode_)));
   }
+  // @oss-disable
+      // @oss-disable
+      // @oss-disable
+       // @oss-disable
 }
 
 uint32_t IncastRank::resolveNumSources(const workload::thrift::Workload& w) {

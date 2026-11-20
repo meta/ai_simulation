@@ -39,6 +39,7 @@ TEST(ValidationTest, CheckRegisteredValidations) {
       names,
       (std::set<std::string>{
           "ChannelWorkloadShouldNotMixQpSources",
+          // @oss-disable
           "LinkNodeShouldMatch",
           // @oss-disable
           "NicConfigShouldExist",

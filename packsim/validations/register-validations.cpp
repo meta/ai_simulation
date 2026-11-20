@@ -9,6 +9,7 @@
 
 #include "packsim/validations/channel-workload-should-not-mix-qp-sources.h"
 // @oss-disable
+// @oss-disable
 #include "packsim/validations/link-node-should-match.h"
 #include "packsim/validations/nic-config-should-exist.h"
 #include "packsim/validations/no-cycles-in-workload-dag.h"
@@ -34,6 +35,7 @@ void registerValidations() {
   reg<details::NicConfigShouldExist>();
   reg<details::NoCyclesInWorkloadDag>();
   reg<details::LinkNodeShouldMatch>();
+  // @oss-disable
   // @oss-disable
   reg<details::ChannelWorkloadShouldNotMixQpSources>();
 }

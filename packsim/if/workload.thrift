@@ -180,7 +180,16 @@ struct AllGather {
   7: RingNicSelectionMode nicSelectionMode = RingNicSelectionMode.SINGLE_NIC;
 }
 
-@thrift.ReserveIds{ids = [4]} // @oss-enable
+// @oss-disable
+// @oss-disable
+// @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+// @oss-disable
+
+@thrift.ReserveIds{ids = [4, 6]} // @oss-enable
 struct Incast {
   1: uint64 sizeBytes;
   // Ranks 1..numSources each send sizeBytes to rank 0; ranks above numSources
@@ -194,6 +203,14 @@ struct Incast {
   // WorkloadMode.PUSH). When set to PUSH, senders use RDMA WRITEs and no
   // receives are posted.
   5: WorkloadMode workloadMode = WorkloadMode.SENDRCV;
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
+  // @oss-disable
 }
 
 // @oss-disable
