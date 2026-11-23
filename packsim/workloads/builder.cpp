@@ -332,6 +332,8 @@ std::unique_ptr<WorkloadRank> buildWorkloadRank(
     // @oss-disable
       // @oss-disable
           // @oss-disable
+    // @oss-disable
+      // @oss-disable
     case WorkloadSpecificConfig::Type::batch:
       return std::make_unique<BatchRank>(params);
     case WorkloadSpecificConfig::Type::compute:
@@ -341,7 +343,6 @@ std::unique_ptr<WorkloadRank> buildWorkloadRank(
     // @oss-disable
       // @oss-disable
     case WorkloadSpecificConfig::Type::__EMPTY__:
-    // @oss-disable
     // @oss-disable
     // @oss-disable
       break;

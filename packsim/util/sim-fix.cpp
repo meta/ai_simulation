@@ -743,7 +743,11 @@ void buildQPNMap(std::vector<packsim::workload::thrift::Workload>& workloads) {
       throw std::runtime_error("WorkloadID mismatch");
     }
     // @oss-disable
+            // @oss-disable
+            // @oss-disable
         // @oss-disable
+            // @oss-disable
+            // @oss-disable
       // @oss-disable
       // @oss-disable
     // @oss-disable
