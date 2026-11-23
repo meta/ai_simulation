@@ -77,8 +77,10 @@ struct GoBackNLrConfig {
   // the gap are kept with outofOrderPktSupport on; with it off they are
   // discarded and repaired one NACK at a time.
   // With outofOrderPktSupport off, or with this true, a retransmit timer also
-  // resends the newest unacknowledged message's last packet when ACKs stop
-  // arriving, which recovers a lost last packet or ACK.
+  // resends the newest unacknowledged packet that asks for an ACK (a message's
+  // last packet or, with RoceV2TransportConfig.creditFlowControl, the first
+  // packet of a piece) when ACKs stop arriving, which recovers a lost packet of
+  // either kind or its ACK.
   // Set this to true when outofOrderPktSupport is on and the fabric can drop
   // packets: a switch buffer that cannot admit one (on a lossy priority group,
   // or on a lossless one whose headroom is used up), a switch or NIC egress
@@ -113,4 +115,19 @@ union RoceV2LossRecoveryConfig {
 struct RoceV2TransportConfig {
   1: RoceV2CongestionControlConfig congestionControl;
   2: RoceV2LossRecoveryConfig lossRecovery;
+  // Credit-based flow control of the messages that take a posted receive: SENDs
+  // and WRITEs with immediate, both called SENDs below. Every ACK reports how
+  // many receives the acknowledging side has posted on the queue pair beyond
+  // any the acknowledged packet's message takes: the credit is that count when
+  // it acknowledged, so SENDs already in flight are counted again. The first
+  // packet of every piece of up to 64 KiB that the transport sends of a message
+  // in one go (4 pieces for a 256 KiB SEND) asks for an ACK, as the last packet
+  // of every message does. A sender spends one credit on each SEND. A SEND it
+  // holds no credit for goes as its first packet alone, and the rest of it and
+  // any later SEND wait for the next ACK; plain WRITEs need no credit. An ACK
+  // for a message may complete it once its last piece has been handed to the
+  // NIC, which can be before its last packet has left. Off by default, since
+  // whether real networks and hardware behave this way is not yet clear and may
+  // need validating.
+  3: bool creditFlowControl = false;
 }

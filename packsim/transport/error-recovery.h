@@ -286,8 +286,10 @@ class GoBackNRecovery final : public ErrorRecovery {
     // about NIC configs that break that (describeGoBackNAckMismatch()).
     bool inOrderDelivery{false};
 
-    // Tail/ACK-loss timeout. Armed once an ACK-requesting tail is sent, when
-    // inOrderDelivery or selectiveGapRepair is set; otherwise no timer runs.
+    // Tail/ACK-loss timeout. Armed once a packet that asks for an ACK is sent
+    // (a message's last packet or, with credit-based flow control, a send
+    // chunk's first), when inOrderDelivery or selectiveGapRepair is set;
+    // otherwise no timer runs.
     Time retransmitTimeout{Time::fromMs(1)};
 
     // Consecutive timeouts allowed without ACK progress before QP failure. A

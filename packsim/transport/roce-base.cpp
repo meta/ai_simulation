@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -130,6 +131,7 @@ RoceTransportConfig RoceTransportConfig::fromThrift(
         case LrType::__EMPTY__:
           throw std::invalid_argument("unsupported RoCE loss recovery config");
       }
+      config.creditFlowControl = *roceThriftConfig.creditFlowControl();
       return config;
     }
     // @oss-disable
@@ -150,7 +152,7 @@ RoceTransportConfig RoceTransportConfig::fromThrift(
 // ---------------------------------------------------------------------------
 
 RoceSocketBase::RoceSocketBase(
-    RoceTransportBase* transport,
+    RoceTransportBase* FOLLY_NONNULL transport,
     const FlexDeviceId& src,
     const FlexDeviceId& dst,
     const uint16_t srcPort,
@@ -161,7 +163,8 @@ RoceSocketBase::RoceSocketBase(
     const ErrorRecoveryFactory& errorRecoveryFactory,
     const CongestionControlFactory& congestionControlFactory)
     : Socket(transport, src, dst, srcPort, localQPN, remoteQPN, workload),
-      egressPortKey_{devicePairKey(src, dst)} {
+      egressPortKey_{devicePairKey(src, dst)},
+      creditFlowControl_{transport->roceCfg_.creditFlowControl} {
   dstPort_ = kRoceV2UdpPort;
   dataCos_ = transport->dataCos_;
   ackCos_ = transport->ackCos_;
@@ -248,9 +251,16 @@ std::tuple<bool, uint32_t> RoceSocketBase::sendBytes(uint32_t quota) {
   uint32_t sentBytes = 0;
   while (moreToSend) {
     auto msg = queuedMsgs_.front();
+    const CreditGate gate =
+        creditFlowControl_ ? takeSendCredit(*msg) : CreditGate::SEND;
+    if (gate == CreditGate::HOLD) {
+      break;
+    }
     const bool startOfMsg = msgBytesSent_ == 0;
     const auto msgBytesRemain = msg->sizeBytes - msgBytesSent_;
-    const uint32_t remainingQuota = quota - sentBytes;
+    const uint32_t remainingQuota = gate == CreditGate::SEND_FIRST_PACKET
+        ? std::min(quota - sentBytes, uint32_t{kMaxRdmaPayload})
+        : quota - sentBytes;
     uint32_t sendSize;
     bool endOfMsg;
     if (msgBytesRemain <= remainingQuota) {
@@ -266,7 +276,11 @@ std::tuple<bool, uint32_t> RoceSocketBase::sendBytes(uint32_t quota) {
     }
     sentBytes += sendSize;
 
-    moreToSend = sentBytes < quota && !queuedMsgs_.empty();
+    // A message that credit-based flow control holds must not follow in this
+    // turn: the turn would then end with no packet that calls back once sent.
+    moreToSend = sentBytes < quota && !queuedMsgs_.empty() &&
+        gate != CreditGate::SEND_FIRST_PACKET &&
+        !isHeldForCredit(*queuedMsgs_.front());
     XLOGF(
         DBG,
         "Sending {}/{} bytes - ({} bytes remaining)",
@@ -323,6 +337,7 @@ void RoceSocketBase::fetchDataAndSend(
          .callbackOnSend = isLastPkt && endOfQuotaChunk,
          .carriesWriteDest = isFirstPkt && startOfMsg && msg.isWrite &&
              msg.writeAddr.has_value(),
+         .creditAckReq = isFirstPkt && creditFlowControl_,
          .writeImmData = msg.writeImmData,
          .sendOrWriteData = msg.sendOrWriteData});
     scheduleSend(readDelay, info);
@@ -364,12 +379,13 @@ void RoceSocketBase::roceEncap(
   if ((info.nackTime != UINT8_MAX) && info.isNack) {
     rocePkt->nackTimer = info.nackTime;
   }
-  rocePkt->ackReq = !info.isAck && !info.isNack && info.isLastPkt;
+  rocePkt->ackReq = !info.isAck && !info.isNack && info.asksForAck();
   rocePkt->psn = psn;
   rocePkt->sequenceNum = info.sequenceNum;
   rocePkt->isWrite = info.isWrite;
   rocePkt->isWriteImm = info.isWriteImm;
   rocePkt->sendOrWriteData = info.sendOrWriteData;
+  rocePkt->recvCredit = info.recvCredit;
   // Non-null exactly when this QP was built with a loss-recovery strategy.
   rocePkt->lossRecoveryEnabled = errorRecovery_ != nullptr;
 }
@@ -487,7 +503,7 @@ void RoceSocketBase::onPacketRcvd(const PacketPtr& pktPtr) {
   const bool isLastPkt = pkt->isLastPkt();
 
   if (pkt->isAck) {
-    return ackRcvd(sendSeqNum, pkt->psn);
+    return ackRcvd(sendSeqNum, pkt->psn, pkt->recvCredit);
   }
 
   if (pkt->isNack) {
@@ -499,38 +515,39 @@ void RoceSocketBase::onPacketRcvd(const PacketPtr& pktPtr) {
   }
 
   bool ackRequested = pkt->ackReq;
+  const auto receiveSeqNum = sendSeqNum - rxWritesReceived_;
   // Already-delivered PSNs are resolved here, before the expected-message
   // lookup below. A duplicate must be ACKed, not answered with an RNR: RNR
   // tells the sender to back off and retransmit data the receiver already
   // has. The lookup would RNR precisely because the message it re-delivers
   // has already completed and left expectedMsgs_.
   if (errorRecovery_ && pkt->psn < expectedPsn_ &&
-      !isPsnOk(sendSeqNum, pkt->psn, ackRequested)) {
+      !isPsnOk(
+          sendSeqNum,
+          pkt->psn,
+          /*packetTakesRecv=*/!pkt->isWrite && isRecvPosted(receiveSeqNum),
+          ackRequested)) {
     return;
   }
 
-  const auto receiveSeqNum = sendSeqNum - rxWritesReceived_;
-  if (!pkt->isWrite) {
-    const auto match = [receiveSeqNum](Message* msg) {
-      return msg->sequenceNumber == receiveSeqNum;
-    };
-    const auto msgIt =
-        std::find_if(expectedMsgs_.begin(), expectedMsgs_.end(), match);
-    if (msgIt == expectedMsgs_.end()) {
-      XLOGF(
-          DBG,
-          "Packet SQN {} does not match any of the expected SQNs (size: {} bytes): {}",
-          receiveSeqNum,
-          pkt->getSize(),
-          *pkt);
-      for (const auto& msg : expectedMsgs_) {
-        XLOGF(DBG, "* Expected message: {}", msg->toString());
-      }
-      return sendRnr(pkt->psn);
+  if (!pkt->isWrite && !isRecvPosted(receiveSeqNum)) {
+    XLOGF(
+        DBG,
+        "Packet SQN {} does not match any of the expected SQNs (size: {} bytes): {}",
+        receiveSeqNum,
+        pkt->getSize(),
+        *pkt);
+    for (const auto& msg : expectedMsgs_) {
+      XLOGF(DBG, "* Expected message: {}", msg->toString());
     }
+    return sendRnr(pkt->psn);
   }
 
-  if (!isPsnOk(sendSeqNum, pkt->psn, ackRequested)) {
+  if (!isPsnOk(
+          sendSeqNum,
+          pkt->psn,
+          /*packetTakesRecv=*/!pkt->isWrite,
+          ackRequested)) {
     XLOGF(
         DBG,
         "Got out of order packet Seq Num: {}, PSN: {}",
@@ -560,7 +577,8 @@ void RoceSocketBase::onPacketRcvd(const PacketPtr& pktPtr) {
   *cosStat.recvdDataPkts() += 1;
 
   if (ackRequested) {
-    emitAckPacket(sendSeqNum, pkt->psn);
+    emitAckPacket(
+        sendSeqNum, pkt->psn, getRecvCredit(/*packetTakesRecv=*/!pkt->isWrite));
   }
 
   if (pkt->isWrite) {
@@ -657,14 +675,22 @@ std::unique_ptr<Message> RoceSocketBase::makeDeliveredWrite(
 bool RoceSocketBase::isPsnOk(
     const uint32_t seqNum,
     const uint32_t psn,
+    const bool packetTakesRecv,
     bool& ackRequested) {
   if (errorRecovery_) {
     const auto result =
         errorRecovery_->checkPsn(expectedPsn_, psn, outOfOrderPktSupport_);
+    // Only out-of-order delivery defers an ACK, and it rejects WRITEs, so the
+    // packet of a deferred ACK belongs to a message that takes a receive.
     const auto emitReadyDeferredAcks = [&] {
       for (const auto& [ackSeqNum, ackPsn] :
            errorRecovery_->takeReadyDeferredAcks(expectedPsn_)) {
-        emitAckPacket(ackSeqNum, ackPsn);
+        emitAckPacket(
+            ackSeqNum,
+            ackPsn,
+            getRecvCredit(
+                /*packetTakesRecv=*/isRecvPosted(
+                    ackSeqNum - rxWritesReceived_)));
       }
     };
     switch (result) {
@@ -702,7 +728,7 @@ bool RoceSocketBase::isPsnOk(
           // cumulative watermark instead overrides ErrorRecovery::adjustAckPsn,
           // which createAndSendPkt() applies to every outgoing ACK; Go-Back-N
           // deliberately keeps per-packet PSNs.
-          emitAckPacket(seqNum, psn);
+          emitAckPacket(seqNum, psn, getRecvCredit(packetTakesRecv));
         }
         return false;
       case PsnAction::DROP:
@@ -725,17 +751,68 @@ bool RoceSocketBase::isPsnOk(
   return true;
 }
 
-void RoceSocketBase::emitAckPacket(const uint32_t seqNum, const uint32_t psn) {
+void RoceSocketBase::emitAckPacket(
+    const uint32_t seqNum,
+    const uint32_t psn,
+    const uint16_t recvCredit) {
   const SendInfo info({
       .packetSize = kControlPacketBytes,
       .isFirstPkt = true,
       .isLastPkt = true,
       .isAck = true,
       .isNack = false,
+      .recvCredit = recvCredit,
       .psn = psn,
       .sequenceNum = seqNum,
   });
   createAndSendPkt(info);
+}
+
+uint16_t RoceSocketBase::getRecvCredit(
+    const bool packetTakesRecv) const noexcept {
+  const size_t posted = expectedMsgs_.size();
+  const size_t credit = packetTakesRecv && posted > 0 ? posted - 1 : posted;
+  return static_cast<uint16_t>(
+      std::min<size_t>(credit, std::numeric_limits<uint16_t>::max()));
+}
+
+bool RoceSocketBase::isRecvPosted(const uint32_t receiveSeqNum) const noexcept {
+  return std::any_of(
+      expectedMsgs_.begin(),
+      expectedMsgs_.end(),
+      [receiveSeqNum](const Message* msg) {
+        return msg->sequenceNumber == receiveSeqNum;
+      });
+}
+
+RoceSocketBase::CreditGate RoceSocketBase::takeSendCredit(
+    const Message& msg) noexcept {
+  if (isHeldForCredit(msg)) {
+    return CreditGate::HOLD;
+  }
+  if (msg.isWrite || msgBytesSent_ > 0) {
+    return CreditGate::SEND;
+  }
+  if (recvCredits_ > 0) {
+    --recvCredits_;
+    return CreditGate::SEND;
+  }
+  creditStalled_ = true;
+  return CreditGate::SEND_FIRST_PACKET;
+}
+
+bool RoceSocketBase::ackMayCompleteMessage(
+    const uint32_t seqNum) const noexcept {
+  if (!creditFlowControl_) {
+    return true;
+  }
+  if (!outOfOrderPktSupport_) {
+    return !sentMsgs_.empty() && sentMsgs_.front()->sequenceNumber == seqNum;
+  }
+  return std::any_of(
+      sentMsgs_.begin(), sentMsgs_.end(), [seqNum](const Message* msg) {
+        return msg->sequenceNumber == seqNum;
+      });
 }
 
 void RoceSocketBase::sendRnr(const uint32_t psn) {
@@ -873,9 +950,16 @@ void RoceSocketBase::completeAckedMessages(
   }
 }
 
-void RoceSocketBase::ackRcvd(const uint32_t seqNum, const uint32_t psn) {
+void RoceSocketBase::ackRcvd(
+    const uint32_t seqNum,
+    const uint32_t psn,
+    const uint16_t recvCredit) {
   if (isQpFailed()) {
     return;
+  }
+  if (creditFlowControl_) {
+    recvCredits_ = recvCredit;
+    creditStalled_ = false;
   }
 
   const AckResult result =
@@ -883,7 +967,9 @@ void RoceSocketBase::ackRcvd(const uint32_t seqNum, const uint32_t psn) {
   const bool completionAlreadyApplied = result.nextIncompleteSeqNum.has_value()
       ? *result.nextIncompleteSeqNum <= nextSendCqeSequenceNum_
       : seqNum < nextSendCqeSequenceNum_ || completedSendMsgs_.contains(seqNum);
-  if (!result.isStale && !completionAlreadyApplied) {
+  const bool mayComplete =
+      result.nextIncompleteSeqNum.has_value() || ackMayCompleteMessage(seqNum);
+  if (!result.isStale && !completionAlreadyApplied && mayComplete) {
     completeAckedMessages(seqNum, result);
   }
 

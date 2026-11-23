@@ -91,6 +91,7 @@ TEST(RocePacketReset, RestoresRoceFieldDefaults) {
   pkt.isWrite = true;
   pkt.isWriteImm = true;
   pkt.sendOrWriteData = 13;
+  pkt.recvCredit = 17;
   pkt.egressNicPort = 3;
   pkt.dstNicPort = 5;
 
@@ -108,6 +109,7 @@ TEST(RocePacketReset, RestoresRoceFieldDefaults) {
   EXPECT_FALSE(pkt.isWrite);
   EXPECT_FALSE(pkt.isWriteImm);
   EXPECT_EQ(pkt.sendOrWriteData, 0u);
+  EXPECT_EQ(pkt.recvCredit, 0u);
   EXPECT_FALSE(pkt.egressNicPort.has_value());
   EXPECT_FALSE(pkt.dstNicPort.has_value());
 }

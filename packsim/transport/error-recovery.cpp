@@ -128,7 +128,8 @@ void GoBackNRecovery::onPacketScheduled(const RoceSendInfo& info) {
   if (!info.isRetransmit) {
     reTxQ_.emplace_back(info);
     reTxPtr_ = reTxQ_.size();
-    if (acksAreCumulative() && info.isLastPkt && !retransmitEvent_.isActive()) {
+    if (acksAreCumulative() && info.asksForAck() &&
+        !retransmitEvent_.isActive()) {
       retransmitTimeoutAttempts_ = 0;
       resetRetransmitTimeout();
     }
@@ -344,7 +345,7 @@ bool GoBackNRecovery::hasRetransmitPending() const noexcept {
 }
 
 void GoBackNRecovery::resetRetransmitTimeout() {
-  // The isLastPkt scan below is O(reTxQ_) and runs on every ACK while
+  // The asksForAck scan below is O(reTxQ_) and runs on every ACK while
   // acksAreCumulative(). Kept as a scan rather than a maintained counter: the
   // counter would have to stay in sync across every reTxQ_ push and pop, and
   // a desync silently mis-schedules the retransmit timer. Revisit if reTxQ_
@@ -355,7 +356,7 @@ void GoBackNRecovery::resetRetransmitTimeout() {
   retransmitEvent_.cancel();
   const bool ackPending =
       std::any_of(reTxQ_.begin(), reTxQ_.end(), [](const RoceSendInfo& info) {
-        return info.isLastPkt;
+        return info.asksForAck();
       });
   if (ackPending) {
     retransmitEvent_ = simCtx_->schedule(
@@ -377,7 +378,7 @@ void GoBackNRecovery::onRetransmitTimeout() {
   auto tailIndex = reTxQ_.size();
   while (tailIndex > 0) {
     --tailIndex;
-    if (reTxQ_[tailIndex].isLastPkt) {
+    if (reTxQ_[tailIndex].asksForAck()) {
       ++retransmitTimeoutAttempts_;
       reTxPtr_ = tailIndex;
       retransmitTrigger_ = RetransmitTrigger::TIMER;
@@ -388,9 +389,9 @@ void GoBackNRecovery::onRetransmitTimeout() {
       return;
     }
   }
-  // No isLastPkt entry left: resetRetransmitTimeout() only arms this timer
-  // while one exists, so reaching here means the queue drained between the
-  // arm and the fire. Nothing to poke and nothing to re-arm.
+  // No entry that asks for an ACK left: resetRetransmitTimeout() only arms this
+  // timer while one exists, so reaching here means the queue drained between
+  // the arm and the fire. Nothing to poke and nothing to re-arm.
 }
 
 void GoBackNRecovery::failRecovery() {

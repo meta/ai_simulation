@@ -51,6 +51,8 @@ struct RoceTransportConfig {
   // Go-Back-N config (only used when errorRecovery == GO_BACK_N).
   uint8_t rnrTimeIdx = 1;
   bool selectiveGapRepair = false;
+  // RoceV2TransportConfig.creditFlowControl.
+  bool creditFlowControl = false;
 
   /**
    * Build the config from the `roceV2` thrift transport variant. Single source
@@ -84,7 +86,7 @@ class RoceSocketBase : public Socket,
       CongestionControl>(CongestionControlSocket&, SimContext&)>;
 
   RoceSocketBase(
-      RoceTransportBase* transport,
+      RoceTransportBase* FOLLY_NONNULL transport,
       const FlexDeviceId& src,
       const FlexDeviceId& dst,
       uint16_t srcPort,
@@ -206,7 +208,15 @@ class RoceSocketBase : public Socket,
 
   // Send `info`'s packet `delay` from now and record it for retransmission.
   virtual void scheduleSend(Time delay, const SendInfo& info);
-  virtual void ackRcvd(uint32_t seqNum, uint32_t psn);
+  /**
+   * Handle an ACK: complete the messages it acknowledges and resume sending.
+   * With credit-based flow control, also take the ACK's credit.
+   *
+   * @param seqNum      Sequence number of the message the ACK is for.
+   * @param psn         PSN the ACK acknowledges.
+   * @param recvCredit  The receiver's credit the ACK carries.
+   */
+  virtual void ackRcvd(uint32_t seqNum, uint32_t psn, uint16_t recvCredit);
   virtual void nackRcvd(uint32_t expectedPsn, uint8_t nackTime);
   virtual void cnpRcvd();
   // Count, in this socket's own stats, a packet it sent that left the NIC
@@ -262,19 +272,99 @@ class RoceSocketBase : public Socket,
    * Check a received PSN and apply the resulting receive-path side effects
    * (deferred-ACK release, duplicate ACK, NACK request).
    *
-   * @param seqNum        Sequence number of the received packet.
-   * @param psn           PSN of the received packet.
-   * @param ackRequested  In/out: the packet's ACK request. CLEARED when the
-   *                      ACK is deferred instead of sent now, so the caller
-   *                      must not assume it survives the call.
+   * @param seqNum           Sequence number of the received packet.
+   * @param psn              PSN of the received packet.
+   * @param packetTakesRecv  Whether the packet's message holds a posted
+   *                         receive that still waits for the rest of it,
+   *                         which a duplicate's re-ACK leaves out of its
+   *                         credit (getRecvCredit()).
+   * @param ackRequested     In/out: the packet's ACK request. CLEARED when the
+   *                         ACK is deferred instead of sent now, so the caller
+   *                         must not assume it survives the call.
    *
-   * @return              True if the caller should keep processing the packet.
+   * @return                 True if the caller should keep processing the
+   *                         packet.
    */
-  virtual bool isPsnOk(uint32_t seqNum, uint32_t psn, bool& ackRequested);
+  virtual bool isPsnOk(
+      uint32_t seqNum,
+      uint32_t psn,
+      bool packetTakesRecv,
+      bool& ackRequested);
   virtual void sendRnr(uint32_t psn);
   virtual void createAndSendPkt(const SendInfo& info);
   virtual RoceTransportBase* transport() const;
-  void emitAckPacket(uint32_t seqNum, uint32_t psn);
+  void emitAckPacket(uint32_t seqNum, uint32_t psn, uint16_t recvCredit);
+
+  /**
+   * The credit an ACK reports: the receives posted on this socket beyond any
+   * the acknowledged packet's message takes.
+   *
+   * @param packetTakesRecv  Whether the acknowledged packet belongs to a
+   *                         message that takes a posted receive (a SEND or a
+   *                         WRITE with immediate), whose receive is still
+   *                         posted.
+   *
+   * @return                 The credit, at most UINT16_MAX.
+   */
+  uint16_t getRecvCredit(bool packetTakesRecv) const noexcept;
+
+  /**
+   * Whether a receive posted on this socket still waits for the message of
+   * @p receiveSeqNum: the message takes a receive (a SEND or a WRITE with
+   * immediate) and has yet to arrive in full.
+   *
+   * @param receiveSeqNum  The message's receive sequence number: its send
+   *                       sequence number less the WRITEs this socket
+   *                       received before it.
+   *
+   * @return               Whether such a receive is posted.
+   */
+  bool isRecvPosted(uint32_t receiveSeqNum) const noexcept;
+
+  // What credit-based flow control lets the front queued message do.
+  enum class CreditGate {
+    // Send as the quota allows.
+    SEND,
+    // Send the first packet only, then wait for an ACK.
+    SEND_FIRST_PACKET,
+    // Send nothing until an ACK arrives.
+    HOLD,
+  };
+
+  /**
+   * Decide what credit-based flow control lets @p msg, the front queued
+   * message, do, taking a credit or starting the wait for one. A WRITE always
+   * goes. A SEND waits while the socket waits for an ACK, goes on once it has
+   * started, spends a credit to start, and without one goes as its first
+   * packet only.
+   *
+   * @param msg  The front queued message.
+   *
+   * @return     What the message may do.
+   */
+  CreditGate takeSendCredit(const Message& msg) noexcept;
+
+  // Whether credit-based flow control holds @p msg until the next ACK: a SEND
+  // while the socket waits for one.
+  bool isHeldForCredit(const Message& msg) const noexcept {
+    return creditFlowControl_ && creditStalled_ && !msg.isWrite;
+  }
+
+  /**
+   * Whether an ACK that completes by sequence number may complete message
+   * @p seqNum now. Without credit-based flow control only last packets ask
+   * for ACKs, so every ACK may. With it, the first packet of each send chunk
+   * asks for one too, and such an ACK completes its message once the
+   * message's last chunk has been handed to the NIC, which can be before its
+   * last packet has left. It completes nothing while the message is still
+   * being sent or, without out-of-order support, while an older sent message
+   * is outstanding.
+   *
+   * @param seqNum  Sequence number of the message the ACK is for.
+   *
+   * @return        Whether the ACK may complete the message.
+   */
+  bool ackMayCompleteMessage(uint32_t seqNum) const noexcept;
   void roceEncap(const PacketPtr& pkt, const SendInfo& info, uint32_t psn)
       const;
   void udpEncap(const PacketPtr& pkt) const;
@@ -320,6 +410,14 @@ class RoceSocketBase : public Socket,
   folly::F14FastMap<uint32_t, Message*> completedSendMsgs_;
   folly::F14FastMap<uint32_t, Message*> completedRecvMsgs_;
   folly::F14FastMap<size_t, uint32_t> bytesReceivedPerMsg_;
+  // RoceTransportConfig::creditFlowControl of this socket's transport.
+  const bool creditFlowControl_;
+  // Credit-based flow control: the receives the peer last reported posted,
+  // less the SENDs started against them since.
+  uint16_t recvCredits_{0};
+  // Whether a SEND went out as its first packet alone, without credit, and the
+  // socket waits for an ACK before it sends the rest of it or another SEND.
+  bool creditStalled_{false};
 
   Message* removeSentMessage(uint32_t seqNum);
   void completeAckedMessages(uint32_t seqNum, const AckResult& result);

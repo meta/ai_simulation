@@ -79,6 +79,14 @@ on `main` has the detail.
   `RoceWritePacket`, in `packsim/packet/roce.h`, of the new type
   `PacketType::ROCE_WRITE`. `PacketPtr::is<RocePacket>()` matches it, and a
   `pktType == PacketType::ROCE` test does not. Unset, nothing changes.
+- `RoceV2TransportConfig.creditFlowControl` in
+  `packsim/if/roce_v2_config.thrift`: credit-based flow control of RoCEv2
+  SENDs and WRITEs with immediate. Every ACK reports the receives the
+  acknowledging side has posted, and a SEND or WRITE with immediate the sender
+  holds no credit for goes as its first packet alone, the rest following the
+  next ACK. Plain WRITEs need no credit. Off by default, since whether real
+  networks and hardware behave this way is not yet clear and may need
+  validating. Off, nothing changes.
 
 ### Changed
 
@@ -122,6 +130,10 @@ on `main` has the detail.
   its context's queue, the handle reads as stale at once, so `getEventTimeFs()`
   returns 0. Debug builds abort when a context cancels another context's event
   during a run.
+- `RoceSocketBase::ackRcvd` takes the receive credit the ACK carries, and
+  `emitAckPacket` the credit to report, as a third argument, and `isPsnOk`
+  takes whether the received packet's message holds a posted receive, before
+  `ackRequested`; an override or a caller must change with them.
 
 ### Removed
 

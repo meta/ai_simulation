@@ -97,6 +97,7 @@ struct RocePacket : public UdpPacket {
     isWrite = false;
     isWriteImm = false;
     sendOrWriteData = 0;
+    recvCredit = 0;
     lossRecoveryEnabled = false;
     egressNicPort = std::nullopt;
     dstNicPort = std::nullopt;
@@ -133,6 +134,9 @@ struct RocePacket : public UdpPacket {
   bool isWrite{false};
   bool isWriteImm{false};
   uint32_t sendOrWriteData{0};
+  // In an ACK, the acknowledging side's receive credit (see
+  // RoceSendInfo::recvCredit).
+  uint16_t recvCredit{0};
 
   // True when the sending QP has loss recovery configured (RoceV2
   // lossRecovery selects goBackN, not dummy), so this packet will be

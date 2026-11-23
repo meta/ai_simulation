@@ -69,6 +69,8 @@ struct RoceTransportConfig {
   // Go-Back-N config (only used when errorRecovery == GO_BACK_N).
   uint8_t rnrTimeIdx = 1;
   bool selectiveGapRepair = false;
+  // RoceV2TransportConfig.creditFlowControl.
+  bool creditFlowControl = false;
 
   static RoceTransportConfig fromThrift(
       const packsim::thrift::TransportConfig& transport);
@@ -76,9 +78,11 @@ struct RoceTransportConfig {
 ```
 
 With `NONE` for both, you get optimistic RoCE (no loss recovery, no rate
-limiting). `RoceTransportBase::makeSocket()` turns the config into a factory for
-each strategy it selects, and the `RoceSocketBase` constructor calls them, so
-every socket builds and owns its own components.
+limiting). `creditFlowControl` makes a SEND wait for receive credit that the
+peer reports in its ACKs; see `if/roce_v2_config.thrift`.
+`RoceTransportBase::makeSocket()` turns the config into a factory for each
+strategy it selects, and the `RoceSocketBase` constructor calls them, so every
+socket builds and owns its own components.
 
 ### Strategy component interaction
 

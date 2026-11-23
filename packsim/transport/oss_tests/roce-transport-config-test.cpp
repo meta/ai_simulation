@@ -120,6 +120,22 @@ TEST(RoceTransportConfigFromThrift, ComposableGoBackNUsesDefaultRnrIdx) {
   EXPECT_EQ(cfg.rnrTimeIdx, 1);
 }
 
+TEST(RoceTransportConfigFromThrift, CreditFlowControlIsOffByDefault) {
+  const auto cfg = RoceTransportConfig::fromThrift(
+      makeRoce(makeDummyCongestionControl(), makeGoBackNLossRecovery(1)));
+  EXPECT_FALSE(cfg.creditFlowControl);
+}
+
+TEST(RoceTransportConfigFromThrift, CreditFlowControlIsMapped) {
+  auto transport =
+      makeRoce(makeDummyCongestionControl(), makeGoBackNLossRecovery(1));
+  transport.roceV2()->creditFlowControl() = true;
+
+  const auto cfg = RoceTransportConfig::fromThrift(transport);
+
+  EXPECT_TRUE(cfg.creditFlowControl);
+}
+
 TEST(RoceTransportConfigFromThrift, ComposableDcqcnPlusGoBackN) {
   const auto cfg = RoceTransportConfig::fromThrift(
       makeRoce(makeDcqcnCongestionControl(), makeGoBackNLossRecovery(3)));
