@@ -7,6 +7,7 @@
 
 // @oss-disable
 // @oss-disable
+// @oss-disable
 include "packsim/if/qp_pair_config.thrift"
 include "thrift/annotation/cpp.thrift"
 include "thrift/annotation/thrift.thrift"
@@ -426,7 +427,7 @@ struct Dataflow {
 }
 
 // Ids reserved below are never reused for a different type. // @oss-enable
-@thrift.ReserveIds{ids = [7, 20, 21, 30]} // @oss-enable
+@thrift.ReserveIds{ids = [7, 20, 21, 30, 41]} // @oss-enable
 union WorkloadSpecificConfig {
   1: AllToAll allToAll;
   2: AllReduce allReduce;
@@ -441,6 +442,8 @@ union WorkloadSpecificConfig {
   // @oss-disable
   40: Compute compute;
   50: Dataflow dataflow;
+  // @oss-disable
+  // @oss-disable
 }
 
 struct QPNPair {

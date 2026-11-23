@@ -27,6 +27,7 @@
 #include "packsim/if/gen-cpp2/topology_constants.h"
 #include "packsim/if/gen-cpp2/workload_types.h"
 // @oss-disable
+// @oss-disable
 #include "packsim/workloads/builder.h"
 #include "packsim/workloads/dataflow.h"
 
@@ -117,6 +118,7 @@ railConfigForWorkload(const Workload& w) {
     case WorkloadSpecificConfig::Type::permutation:
     // @oss-disable
     case WorkloadSpecificConfig::Type::batch:
+    // @oss-disable
     // @oss-disable
     // @oss-disable
     // @oss-disable
@@ -679,6 +681,7 @@ std::vector<Workload> fixOneWorkload(Workload& w, Random& random) {
     // @oss-disable
     // @oss-disable
     // @oss-disable
+    // @oss-disable
     case WorkloadSpecificConfig::Type::compute:
       break;
   }
@@ -889,6 +892,8 @@ void buildNicQPNMap(
 
 void fixupSimCfg(packsim::thrift::Simulation& simCfg, Random& random) {
   fixNicCfg(simCfg);
+  // @oss-disable
+      // @oss-disable
   validateAndFixWorkloads(simCfg, random);
   validateChannelQpSources(simCfg);
   // @oss-disable

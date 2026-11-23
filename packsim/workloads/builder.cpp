@@ -343,6 +343,7 @@ std::unique_ptr<WorkloadRank> buildWorkloadRank(
     case WorkloadSpecificConfig::Type::__EMPTY__:
     // @oss-disable
     // @oss-disable
+    // @oss-disable
       break;
   }
   throw std::invalid_argument(
@@ -379,6 +380,7 @@ std::vector<std::vector<uint32_t>> getRankPeers(
     // @oss-disable
       // @oss-disable
     case WorkloadSpecificConfig::Type::__EMPTY__:
+    // @oss-disable
     // @oss-disable
     // @oss-disable
     // @oss-disable

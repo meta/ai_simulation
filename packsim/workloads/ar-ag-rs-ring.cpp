@@ -103,6 +103,7 @@ void RingRank::initFromCollectiveConfig() {
     // @oss-disable
     // @oss-disable
     // @oss-disable
+    // @oss-disable
     case WorkloadSpecificConfig::Type::compute:
     case WorkloadSpecificConfig::Type::dataflow:
       break;
