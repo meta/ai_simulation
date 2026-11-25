@@ -11,7 +11,12 @@
 
 #include <gtest/gtest.h>
 
+#include "packsim/if/gen-cpp2/workload_types.h"
+#include "packsim/kernel/time.h"
+#include "packsim/transport/transport.h"
 #include "packsim/workloads/all-reduce-dbt.h"
+#include "packsim/workloads/oss_tests/rank-harness.h"
+#include "packsim/workloads/rank/workload-rank.h"
 
 namespace packsim {
 namespace {
@@ -179,6 +184,87 @@ TEST(BuildDoubleBinaryTreeTest, OddAndEvenLeavesPartitionAllRanks) {
     }
     EXPECT_EQ(oddLeaves.size() + evenLeaves.size(), n);
   }
+}
+
+/**
+ * A double binary tree all-reduce run through the rank harness, which checks
+ * that every message lands in the receive posted for its chunk on its queue
+ * pair. A test sets the rank count and start delays, then calls run().
+ */
+class AllReduceDbtOrderTest : public packsim::WorkloadRankTestHarness,
+                              public ::testing::Test {
+ protected:
+  // Size of each tree's chunks: 2 KiB, so a 2-chunk tree moves 4 KiB.
+  static constexpr uint32_t kChunkSizeBytes = 2048;
+
+  /**
+   * Configure the all-reduce.
+   *
+   * @param numRanks   Ranks in the trees, a power of 2, e.g. 4.
+   * @param numChunks  Chunks per tree, e.g. 2.
+   */
+  void configure(const uint32_t numRanks, const uint32_t numChunks) {
+    workCfg_.name() = "AR_DBT_ORDER";
+    workCfg_.workloadId() = 0;
+    workCfg_.numEndpoints() = numRanks;
+    auto ar = packsim::workload::thrift::AllReduce();
+    ar.sizeBytes() = 2 * kChunkSizeBytes * numChunks;
+    ar.numChunks() = numChunks;
+    ar.algorithm() =
+        packsim::workload::thrift::AllReduceAlgorithm::DOUBLE_BINARY_TREE;
+    workCfg_.config()->allReduce() = ar;
+  }
+
+  void sendMessage(Message* msg) override {
+    if (msg->connectionMessageId == kNotifyConnectionMessageId &&
+        msg->srcRank == heldNotifySrc_ && msg->dstRank == heldNotifyDst_ &&
+        !isNotifyHeld_) {
+      isNotifyHeld_ = true;
+      scheduler_.scheduleAfter(
+          &simCtx_, Time::fromNs(kNotifyHoldNs), [this, msg]() {
+            WorkloadRankTestHarness::sendMessage(msg);
+          });
+      return;
+    }
+    WorkloadRankTestHarness::sendMessage(msg);
+  }
+
+  // How long the network holds the first notify from heldNotifySrc_ to
+  // heldNotifyDst_.
+  static constexpr uint64_t kNotifyHoldNs = 10'000;
+  // Ranks whose first notify the network holds; none by default.
+  uint32_t heldNotifySrc_{UINT32_MAX};
+  uint32_t heldNotifyDst_{UINT32_MAX};
+  bool isNotifyHeld_{false};
+};
+
+// Rank 1 starts 100 us late, so rank 0 sends its even-tree chunks to it only
+// then. Rank 1 sends its odd-tree chunks at once, and rank 0, the odd root,
+// sends them back down. Rank 1 posted the receives for rank 0's even-tree
+// chunks first, so the odd-tree chunks wait behind them.
+TEST_F(AllReduceDbtOrderTest, DownTreeChunksWaitForTheUpTreeChunksOfALateRank) {
+  configure(/*numRanks=*/2, /*numChunks=*/2);
+  workCfg_.explicitStaggeredStartTimeNs() = {0, 100'000};
+
+  ASSERT_NO_THROW(run());
+
+  validateStats();
+  EXPECT_GE(*ranks_.at(1)->getThriftResult().endTimeNs(), 100'000);
+}
+
+// The network holds rank 3's notify to rank 1, so rank 1 sends its odd-tree
+// chunks to rank 2 late. Rank 1 gets the even tree's reduction from rank 3 on
+// time and forwards it to rank 2, which posted the receives for rank 1's
+// odd-tree chunks first.
+TEST_F(AllReduceDbtOrderTest, DownTreeChunksWaitForUpTreeChunksHeldByANotify) {
+  configure(/*numRanks=*/4, /*numChunks=*/4);
+  heldNotifySrc_ = 3;
+  heldNotifyDst_ = 1;
+
+  ASSERT_NO_THROW(run());
+
+  validateStats();
+  EXPECT_TRUE(isNotifyHeld_);
 }
 
 } // namespace

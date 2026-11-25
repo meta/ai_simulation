@@ -178,6 +178,14 @@ on `main` has the detail.
 
 ### Fixed
 
+- A double binary tree `AllReduce` (`packsim/if/workload.thrift`) now sends
+  each peer every up-tree chunk it owes that peer before any down-tree chunk.
+  When a rank started late or a notify was delayed, a down-tree chunk could go
+  first and land in the receive the peer had posted for an up-tree chunk, so
+  the run completed with chunks in the wrong receives: messages received
+  before they were sent, and reductions finished before their data could
+  arrive. Runs in which no chunk landed in another chunk's receive give the
+  same results.
 - A workload in a `WorkloadDag` (`packsim/if/workload.thrift`) now starts when
   some of its ranks run on nodes that none of its dependencies use. Those
   ranks waited for a dependency that never finished on their node, so the

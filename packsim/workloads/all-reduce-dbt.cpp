@@ -111,6 +111,7 @@ AllReduceDbtRank::AllReduceDbtRank(const WorkloadRankParams& params)
     if (!info.amRoot) {
       // Account for expected sends up tree
       expectedSends_ += numChunks;
+      upSendsLeft_[info.parent] += numChunks;
       // Account for expected recvs from parent
       expectedRecvs_ += numChunks;
       allPeers_.emplace(info.parent);
@@ -204,8 +205,47 @@ void AllReduceDbtRank::postInitialSends() {
   for (uint32_t i = 0; i < numChunks; i++) {
     const uint32_t chunkSize = chunkSizes_.at(i);
     const uint32_t chunkId = 2 * i + chunkOffset;
-    leafTreeInfo.sends[parent].emplace_back(send(parent, chunkSize, chunkId));
+    sendUp(parent, chunkSize, chunkId);
   }
+}
+
+void AllReduceDbtRank::sendUp(
+    const uint32_t parent,
+    const uint32_t sizeBytes,
+    const uint32_t chunkId) {
+  sendChunk(parent, sizeBytes, chunkId);
+  if (--upSendsLeft_.at(parent) != 0) {
+    return;
+  }
+  const auto held = heldDownSends_.find(parent);
+  if (held == heldDownSends_.end()) {
+    return;
+  }
+  for (const auto& [heldSizeBytes, heldChunkId] : held->second) {
+    sendChunk(parent, heldSizeBytes, heldChunkId);
+  }
+  heldDownSends_.erase(held);
+}
+
+void AllReduceDbtRank::sendDown(
+    const uint32_t child,
+    const uint32_t sizeBytes,
+    const uint32_t chunkId) {
+  const auto upSends = upSendsLeft_.find(child);
+  if (upSends != upSendsLeft_.end() && upSends->second != 0) {
+    heldDownSends_[child].emplace_back(
+        HeldSend{.sizeBytes = sizeBytes, .chunkId = chunkId});
+    return;
+  }
+  sendChunk(child, sizeBytes, chunkId);
+}
+
+void AllReduceDbtRank::sendChunk(
+    const uint32_t peer,
+    const uint32_t sizeBytes,
+    const uint32_t chunkId) {
+  TreeInfo& treeInfo = (chunkId % 2) == 1 ? oddInfo_ : evenInfo_;
+  treeInfo.sends[peer].emplace_back(send(peer, sizeBytes, chunkId));
 }
 
 void AllReduceDbtRank::requestReceived(Message* msg) {
@@ -236,7 +276,7 @@ void AllReduceDbtRank::requestReceived(Message* msg) {
 
   if (msg->srcRank == treeInfo.parent) {
     for (const auto& child : treeInfo.children) {
-      treeInfo.sends[child].emplace_back(send(child, msg->sizeBytes, chunkId));
+      sendDown(child, msg->sizeBytes, chunkId);
     }
   } else if (
       std::find(
@@ -249,12 +289,10 @@ void AllReduceDbtRank::requestReceived(Message* msg) {
       // chunk back to all children, otherwise forward to parent
       if (treeInfo.amRoot) {
         for (const auto& child : treeInfo.children) {
-          treeInfo.sends[child].emplace_back(
-              send(child, msg->sizeBytes, chunkId));
+          sendDown(child, msg->sizeBytes, chunkId);
         }
       } else {
-        treeInfo.sends[treeInfo.parent].emplace_back(
-            send(treeInfo.parent, msg->sizeBytes, chunkId));
+        sendUp(treeInfo.parent, msg->sizeBytes, chunkId);
       }
     }
   } else {
