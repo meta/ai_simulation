@@ -291,10 +291,18 @@ class Endpoint : public FlexNode, public IPortObserver {
   folly::F14FastMap<uint32_t, packsim::thrift::QpnPortConfig> qpnPortConfigs_;
   const packsim::workload::thrift::Workload* workload_{nullptr};
 
-  // Cache of QPConnections created by transport-controlled egressNicPort
-  // routing. Key encodes srcQPN, srcPort, dstPort.
-  folly::F14FastMap<uint64_t, std::unique_ptr<QPConnection>>
-      egressNicPortConnections_;
+  // A connection made for transport-controlled egressNicPort routing, with the
+  // port its source address names.
+  struct EgressNicPortRoute {
+    std::unique_ptr<QPConnection> conn;
+    // The entry of `ports_` for `conn->srcId`, or nullptr when there is none.
+    // Ports are added only while the topology is built, before any packet is
+    // routed, so the entry cannot change after it is looked up.
+    EthernetPort* FOLLY_NULLABLE port;
+  };
+  // Cache of the routes made by transport-controlled egressNicPort routing.
+  // Key encodes srcQPN, srcPort, dstPort.
+  folly::F14FastMap<uint64_t, EgressNicPortRoute> egressNicPortRoutes_;
 
   // The topology's reachability tracer, shared by every endpoint and owned by
   // FlexTopology; null when the endpoint was built without one.

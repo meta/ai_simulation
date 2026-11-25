@@ -8,9 +8,9 @@
 // Selection policy of `Endpoint::getPortLevelQPConnection`: which of a QPN's
 // port-level connections a packet is pinned to, given a tiebreak spec. The
 // sibling `endpoint-qpn-port-config-test` covers which connections exist; this
-// suite covers which one is picked. The last case covers
+// suite covers which one is picked. The last three cases cover
 // `Endpoint::routePacket`'s bypass of that selection for a packet whose
-// transport already chose its port.
+// transport already chose its port, and the route it keeps for that port.
 
 #include <array>
 #include <cstdint>
@@ -39,6 +39,7 @@
 
 namespace packsim {
 
+using ::testing::AllOf;
 using ::testing::HasSubstr;
 using ::testing::ThrowsMessage;
 
@@ -225,6 +226,26 @@ class EndpointPortLevelQpSelectionTest : public EndpointTestBase {
     return observed;
   }
 
+  /**
+   * A RoCEv2 packet whose transport chose its port: it egresses from, and
+   * lands on, 0-based port `nicPort`.
+   *
+   * @param socketConn  The QP's connection; it must outlive the packet.
+   * @param nicPort     The chosen 0-based port, at both ends.
+   *
+   * @return            The packet.
+   */
+  static PacketPtr makeTransportRoutedPacket(
+      const QPConnection& socketConn,
+      const uint16_t nicPort) {
+    PacketPtr pkt = createPacket<PacketType::ROCE>();
+    auto* const rocePkt = pkt.as<RocePacket>();
+    rocePkt->conn = &socketConn;
+    rocePkt->egressNicPort = nicPort;
+    rocePkt->dstNicPort = nicPort;
+    return pkt;
+  }
+
   const FlexDeviceId destination_{"1:0:2:1:0:0:0:0"};
 
   // Destruction runs in reverse declaration order, and each layer holds a raw
@@ -400,13 +421,8 @@ TEST_F(
   constexpr uint16_t kChosenPort = 3;
   const QPConnection socketConn(
       endpoint_->getFlexId(), destination_, kSrcQpn, kDstQpn);
-  auto pkt = createPacket<PacketType::ROCE>();
-  auto* rocePkt = pkt.tryAs<RocePacket>();
-  ASSERT_NE(rocePkt, nullptr);
-  rocePkt->conn = &socketConn;
-  rocePkt->egressNicPort = kChosenPort;
-  rocePkt->dstNicPort = kChosenPort;
-  ASSERT_TRUE(rocePkt->chosenEgressNicPort().has_value());
+  const PacketPtr pkt = makeTransportRoutedPacket(socketConn, kChosenPort);
+  ASSERT_TRUE(pkt.as<RocePacket>()->chosenEgressNicPort().has_value());
 
   // Act
   EthernetPort* const egress = endpoint_->routePacket(pkt, std::nullopt);
@@ -414,8 +430,54 @@ TEST_F(
   // Assert
   EXPECT_EQ(egress, ports_[kChosenPort].get());
   EXPECT_EQ(
-      portPair(*static_cast<const QPConnection*>(rocePkt->conn)),
+      portPair(*static_cast<const QPConnection*>(pkt.as<RocePacket>()->conn)),
       std::make_pair(4, 4));
+}
+
+// The route made for a QP's transport-chosen port pair is kept for later
+// packets: the next packet of that pair leaves from the same port, on the
+// connection the first packet still points at.
+TEST_F(
+    EndpointPortLevelQpSelectionTest,
+    TheNextPacketToATransportChosenPortReusesItsRoute) {
+  // Arrange
+  constexpr uint16_t kChosenPort = 3;
+  const QPConnection socketConn(
+      endpoint_->getFlexId(), destination_, kSrcQpn, kDstQpn);
+  const PacketPtr first = makeTransportRoutedPacket(socketConn, kChosenPort);
+  const PacketPtr next = makeTransportRoutedPacket(socketConn, kChosenPort);
+  ASSERT_EQ(
+      endpoint_->routePacket(first, std::nullopt), ports_[kChosenPort].get());
+
+  // Act
+  EthernetPort* const egress = endpoint_->routePacket(next, std::nullopt);
+
+  // Assert
+  EXPECT_EQ(egress, ports_[kChosenPort].get());
+  EXPECT_EQ(next.as<RocePacket>()->conn, first.as<RocePacket>()->conn);
+}
+
+// A transport-chosen port the endpoint does not have fails every packet that
+// names it, not only the first, which makes the route.
+TEST_F(
+    EndpointPortLevelQpSelectionTest,
+    EveryPacketToAMissingTransportChosenPortThrows) {
+  // Arrange: 0-based port kNumPorts would be FlexDeviceId port kNumPorts + 1,
+  // which no port of the endpoint has.
+  constexpr uint16_t kMissingPort = kNumPorts;
+  const QPConnection socketConn(
+      endpoint_->getFlexId(), destination_, kSrcQpn, kDstQpn);
+  const PacketPtr first = makeTransportRoutedPacket(socketConn, kMissingPort);
+  const PacketPtr next = makeTransportRoutedPacket(socketConn, kMissingPort);
+  const auto throwsPortNotFound = ThrowsMessage<std::runtime_error>(AllOf(
+      HasSubstr(fmt::format("egressNicPort {} mapped to srcId", kMissingPort)),
+      HasSubstr("not found in ports")));
+  ASSERT_THAT(
+      [&] { endpoint_->routePacket(first, std::nullopt); }, throwsPortNotFound);
+
+  // Act + Assert
+  EXPECT_THAT(
+      [&] { endpoint_->routePacket(next, std::nullopt); }, throwsPortNotFound);
 }
 
 } // namespace packsim

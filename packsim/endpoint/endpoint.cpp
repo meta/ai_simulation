@@ -774,21 +774,27 @@ EthernetPort* Endpoint::routePacketByEgressNicPort(
   const uint64_t key = (uint64_t{conn->srcQPN} << 32) |
       (uint64_t{srcNicPort} << 16) | dstNicPort;
 
-  auto it = egressNicPortConnections_.find(key);
-  if (it == egressNicPortConnections_.end()) {
+  auto it = egressNicPortRoutes_.find(key);
+  if (it == egressNicPortRoutes_.end()) {
     FlexDeviceId srcId = conn->srcId;
     FlexDeviceId dstId = conn->dstId;
     srcId.values[portIndex] = srcNicPort;
     dstId.values[portIndex] = dstNicPort;
-    auto newConn = std::make_unique<QPConnection>(
-        srcId, dstId, conn->srcQPN, conn->dstQPN);
-    it = egressNicPortConnections_.emplace(key, std::move(newConn)).first;
+    const auto portIt = ports_.find(srcId);
+    it = egressNicPortRoutes_
+             .emplace(
+                 key,
+                 EgressNicPortRoute{
+                     .conn = std::make_unique<QPConnection>(
+                         srcId, dstId, conn->srcQPN, conn->dstQPN),
+                     .port = portIt == ports_.end() ? nullptr : portIt->second})
+             .first;
   }
 
-  udpPkt->conn = it->second.get();
+  udpPkt->conn = it->second.conn.get();
 
-  const auto portIt = ports_.find(udpPkt->conn->srcId);
-  if (portIt == ports_.end()) {
+  EthernetPort* const port = it->second.port;
+  if (port == nullptr) {
     std::vector<std::string> portAddresses;
     for (const auto& [pid, value] : ports_) {
       portAddresses.emplace_back(pid.toString());
@@ -804,7 +810,7 @@ EthernetPort* Endpoint::routePacketByEgressNicPort(
             fmt::join(portAddresses, ", ")));
   }
 
-  return portIt->second;
+  return port;
 }
 
 } // namespace packsim
