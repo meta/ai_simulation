@@ -25,7 +25,7 @@ namespace packsim {
  * its case asserts on and can replace one of them without disturbing the
  * others. An unsubscribed event is ignored -- deliberately, and unlike
  * production raisers, which assert. There is no owner here whose wiring could
- * be wrong, so none of the four raisers below repeats this.
+ * be wrong, so none of the five raisers below repeats this.
  *
  * Example usage:
  *
@@ -57,6 +57,7 @@ class LambdaPortObserver : public IPortObserver {
       const PacketPtr&,
       uint8_t,
       packsim::switches::thrift::PacketDropReason)>;
+  using OnChannelStateChangedCallback = std::function<void(EthernetPort&)>;
 
   void setOnPacketRcvdCallback(OnPacketRcvdCallback cb) {
     onPacketRcvd_ = std::move(cb);
@@ -73,6 +74,9 @@ class LambdaPortObserver : public IPortObserver {
   void setOnPacketDroppedOnReceiveCallback(
       OnPacketDroppedOnReceiveCallback cb) {
     onPacketDroppedOnReceive_ = std::move(cb);
+  }
+  void setOnChannelStateChangedCallback(OnChannelStateChangedCallback cb) {
+    onChannelStateChanged_ = std::move(cb);
   }
 
   void onPacketRcvd(EthernetPort& ethPort, const PacketPtr& pkt) override {
@@ -106,12 +110,18 @@ class LambdaPortObserver : public IPortObserver {
       onPacketDroppedOnReceive_(ethPort, pkt, cos, reason);
     }
   }
+  void onChannelStateChanged(EthernetPort& ethPort) override {
+    if (onChannelStateChanged_) {
+      onChannelStateChanged_(ethPort);
+    }
+  }
 
  private:
   OnPacketRcvdCallback onPacketRcvd_;
   OnPacketSentCallback onPacketSent_;
   OnPacketDroppedOnSendCallback onPacketDroppedOnSend_;
   OnPacketDroppedOnReceiveCallback onPacketDroppedOnReceive_;
+  OnChannelStateChangedCallback onChannelStateChanged_;
 };
 
 } // namespace packsim

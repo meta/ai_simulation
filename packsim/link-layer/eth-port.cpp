@@ -569,6 +569,17 @@ void EthernetPort::setRxLog10BerOverride(
 void EthernetPort::setChannelState(const ChannelState state) {
   const auto prevState = channelState_;
   channelState_ = state;
+  // Report the change before the drain below. The drain reports each frame it
+  // drops to the observer, and anything the observer sends in response must
+  // already see the new state.
+  if (state != prevState) {
+    XCHECK(observer_ != nullptr) << fmt::format(
+        "device {} port {} changed its channel state with no observer "
+        "installed; call setObserver() during port setup",
+        flexId_.toString(),
+        getPortNum());
+    observer_->onChannelStateChanged(*this);
+  }
   if (state == ChannelState::DOWN) {
     pfc_.onLinkDown();
 

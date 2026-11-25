@@ -19,6 +19,7 @@
 #include "packsim/kernel/sim-context.h"
 #include "packsim/link-layer/eth-channel.h"
 #include "packsim/link-layer/eth-port.h"
+#include "packsim/link-layer/oss_tests/lambda-port-observer.h"
 #include "packsim/node/flex-node.h"
 #include "packsim/packet/base.h"
 #include "packsim/packet/ptr/PacketPtr.h"
@@ -135,6 +136,7 @@ class FlexNodeTest : public ::testing::Test {
     auto ethPort =
         std::make_unique<packsim::EthernetPort>(simContext_.get(), "100Gbps");
     auto* ethPortPtr = ethPort.get();
+    ethPortPtr->setObserver(&portObserver_);
     node.adoptPort(ethPort);
     node.addPort(ethPortPtr, partnerId, linkId);
 
@@ -152,6 +154,9 @@ class FlexNodeTest : public ::testing::Test {
 
   std::unique_ptr<packsim::Scheduler> scheduler_;
   std::unique_ptr<packsim::SimContext> simContext_;
+  // A port reports each change of its channel state to its observer, so the
+  // ports whose state a test sets need one. It outlives every port here.
+  packsim::LambdaPortObserver portObserver_;
   std::vector<std::unique_ptr<packsim::EthernetChannel>> channels_;
   std::vector<std::unique_ptr<packsim::EthernetPort>> peerPorts_;
 };
@@ -220,6 +225,7 @@ TEST_F(FlexNodeTest, TestRoutePacketThrowsExceptionNoWorkingLink) {
     std::unique_ptr<packsim::EthernetPort> ethPort =
         std::make_unique<packsim::EthernetPort>(simContext_.get(), "100Gbps");
     auto* ethPortPtr = ethPort.get();
+    ethPortPtr->setObserver(&portObserver_);
     testNode.adoptPort(ethPort);
 
     packsim::FlexDeviceId const partnerId({2, 0, 5 + i});

@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -35,6 +36,10 @@ class MockTransport : public Transport {
     onPacketDroppedCallCount_++;
   }
 
+  void onEgressPortStateChanged(EthernetPort* ethPort) override {
+    portsWhoseStateChanged_.emplace_back(ethPort);
+  }
+
   Socket* connect(
       const FlexDeviceId& /* dst */,
       uint16_t /* port */,
@@ -60,8 +65,14 @@ class MockTransport : public Transport {
     return onPacketDroppedCallCount_;
   }
 
+  // The port of each onEgressPortStateChanged call, in order.
+  const std::vector<EthernetPort*>& portsWhoseStateChanged() const {
+    return portsWhoseStateChanged_;
+  }
+
  private:
   int onPacketDroppedCallCount_{0};
+  std::vector<EthernetPort*> portsWhoseStateChanged_;
 };
 
 // Test wrapper to expose protected methods for testing
@@ -251,6 +262,23 @@ TEST_F(EndpointPacketDropTest, ReceiveDropNotifiesSchedulerObserver) {
   EXPECT_EQ(
       *drop_.reason, packsim::switches::thrift::PacketDropReason::LINK_ERROR);
   EXPECT_EQ(*drop_.queueDepth, ethPort_->getTotalQueueLength());
+}
+
+// The endpoint observes its ports for its transport: a port's channel state
+// change reaches the transport with that port.
+class EndpointPortStateTest : public EndpointPacketDropTest {};
+
+TEST_F(EndpointPortStateTest, APortStateChangeReachesTheTransport) {
+  // Arrange
+  const auto* const mockTransport =
+      static_cast<MockTransport*>(endpoint_->transport_.get());
+
+  // Act
+  endpoint_->onChannelStateChanged(*ethPort_);
+
+  // Assert
+  const std::vector<EthernetPort*> expected{ethPort_.get()};
+  EXPECT_EQ(mockTransport->portsWhoseStateChanged(), expected);
 }
 
 } // namespace packsim

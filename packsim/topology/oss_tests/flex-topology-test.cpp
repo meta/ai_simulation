@@ -39,6 +39,7 @@
 #include "packsim/link-layer/cbfc/cbfc-sender-ledger.h"
 #include "packsim/link-layer/cbfc/cbfc-types.h"
 #include "packsim/link-layer/cbfc/cbfc.h"
+#include "packsim/link-layer/eth-channel.h"
 #include "packsim/link-layer/eth-port.h"
 #include "packsim/packet/base.h"
 #include "packsim/packet/ptr/PacketPtr.h"
@@ -98,6 +99,37 @@ TEST_F(FlexTopologyLlrTest, LlrDisabledWhenNotConfigured) {
         << "LLR unexpectedly enabled on port1 for link " << linkId;
     EXPECT_FALSE(port2->isLlrEnabled())
         << "LLR unexpectedly enabled on port2 for link " << linkId;
+  }
+}
+
+// A link configured DOWN starts down at both ends. The links include ends at
+// accelerators, whose endpoints install the port observer that the state
+// change reports to.
+TEST(FlexTopologyLinkStatusTest, ALinkConfiguredDownStartsDown) {
+  packsim::Scheduler scheduler;
+  packsim::SimContext simCtx{&scheduler, 0};
+  auto simCfg = packsim::buildFourZoneClosConfig(/*numAccel=*/32);
+  const auto& nodes = *simCfg.flex_topology()->nodes();
+  const auto isAccel = [&nodes](const std::string& name) {
+    return *nodes.at(name).type() == packsim::thrift::NodeType::ACCEL;
+  };
+  auto& links = *simCfg.flex_topology()->links();
+  ASSERT_TRUE(std::any_of(links.begin(), links.end(), [&](const auto& entry) {
+    return isAccel(*entry.second.node1()) || isAccel(*entry.second.node2());
+  })) << "fixture must contain a link to an accelerator";
+  for (auto& [linkId, link] : links) {
+    link.status() = packsim::thrift::LinkStatus::DOWN;
+  }
+
+  const auto topo = std::make_unique<packsim::FlexTopology>(
+      &scheduler, &simCtx.random, simCfg);
+
+  for (const auto& [linkId, link] : links) {
+    const auto [port1, port2] = topo->getLinkPorts(linkId);
+    EXPECT_EQ(port1->getChannelState(), ChannelState::DOWN)
+        << "port1 of link " << linkId;
+    EXPECT_EQ(port2->getChannelState(), ChannelState::DOWN)
+        << "port2 of link " << linkId;
   }
 }
 

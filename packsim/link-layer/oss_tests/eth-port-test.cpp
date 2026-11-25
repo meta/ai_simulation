@@ -978,6 +978,70 @@ TEST_F(EthernetPortTxQueueSpaceTest, LinkDownDrainRestoresTxQueueAvailability) {
   EXPECT_EQ(numSpaceEvents, 1);
 }
 
+// A port that goes down tells its observer once, before it drops the frames in
+// its queues.
+TEST_F(EthernetPortTxQueueSpaceTest, GoingDownIsReportedOnceBeforeTheDrain) {
+  // Arrange: each report records the new state and the drops seen so far.
+  int numDrops = 0;
+  std::vector<std::pair<ChannelState, int>> reports;
+  observerPort1_.setOnChannelStateChangedCallback(
+      [&reports, &numDrops](EthernetPort& port) {
+        reports.emplace_back(port.getChannelState(), numDrops);
+      });
+  observerPort1_.setOnPacketDroppedOnSendCallback(
+      [&numDrops](
+          EthernetPort&,
+          const PacketPtr&,
+          uint8_t,
+          packsim::switches::thrift::PacketDropReason) { ++numDrops; });
+  attachPorts();
+  fillQueueZeroPastItsMaxThreshold();
+
+  // Act
+  port1_->setChannelState(ChannelState::DOWN);
+
+  // Assert
+  ASSERT_GT(numDrops, 0) << "the drain dropped no queued frame";
+  const std::vector<std::pair<ChannelState, int>> expected{
+      {ChannelState::DOWN, 0}};
+  EXPECT_EQ(reports, expected);
+}
+
+// A port that comes back up tells its observer once.
+TEST_F(EthernetPortTxQueueSpaceTest, ComingBackUpIsReportedOnce) {
+  // Arrange
+  attachPorts();
+  port1_->setChannelState(ChannelState::DOWN);
+  std::vector<ChannelState> reports;
+  observerPort1_.setOnChannelStateChangedCallback(
+      [&reports](EthernetPort& port) {
+        reports.emplace_back(port.getChannelState());
+      });
+
+  // Act
+  port1_->setChannelState(ChannelState::UP);
+
+  // Assert
+  const std::vector<ChannelState> expected{ChannelState::UP};
+  EXPECT_EQ(reports, expected);
+}
+
+// A port set to the state it already has tells its observer nothing.
+TEST_F(EthernetPortTxQueueSpaceTest, SettingTheCurrentStateReportsNothing) {
+  // Arrange
+  attachPorts();
+  ASSERT_EQ(port1_->getChannelState(), ChannelState::UP);
+  int numReports = 0;
+  observerPort1_.setOnChannelStateChangedCallback(
+      [&numReports](EthernetPort&) { ++numReports; });
+
+  // Act
+  port1_->setChannelState(ChannelState::UP);
+
+  // Assert
+  EXPECT_EQ(numReports, 0);
+}
+
 TEST_F(
     EthernetPortTxQueueSpaceTest,
     QueueConfiguredBeforeSubscribingIsMarkedFullPastItsMaxThreshold) {

@@ -683,12 +683,6 @@ std::pair<EthernetPort*, EthernetPort*> FlexTopology::connectNodes(
   port2->attach(channel.get());
   channels_.emplace_back(std::move(channel));
 
-  const auto state = *linkCfg.status() == packsim::thrift::LinkStatus::UP
-      ? ChannelState::UP
-      : ChannelState::DOWN;
-  port1->setChannelState(state);
-  port2->setChannelState(state);
-
   // Install the CtlOS insertion rules (UEC §5.2.11.2) before the LLR and CBFC
   // blocks below: both call `setupLinkLayerScheduler`, which hands the rules
   // the port already holds to the new `LinkLayerScheduler` and starts it.
@@ -778,6 +772,14 @@ void FlexTopology::makeLink(
     }
     sw2->addSwitchPort(port2, group2, id1, *link.linkId());
   }
+
+  // Both observers and port numbers must be installed before a state change
+  // can notify the nodes and their transports.
+  const auto state = *link.status() == packsim::thrift::LinkStatus::UP
+      ? ChannelState::UP
+      : ChannelState::DOWN;
+  port1->setChannelState(state);
+  port2->setChannelState(state);
 
   // The credit bootstrap must follow the `addPort`/`addSwitchPort` calls
   // above: only then do both ports have the port numbers it indexes by.

@@ -96,6 +96,13 @@ on `main` has the detail.
   `packsim/kernel/trace.h`: whether `logPeriodicConditional()` would schedule a
   series of the category, or of some category that starts with the prefix, so
   that a caller can skip building series that would never be traced.
+- `IPortObserver::onChannelStateChanged`, in
+  `packsim/link-layer/port-observer.h`, and
+  `Transport::onEgressPortStateChanged`, in `packsim/transport/transport.h`: a
+  port reports a change of its channel state, to UP or DOWN, to its observer
+  before it drops its queued frames, and the endpoint passes the change on to
+  its transport, which can drop anything it caches from port liveness. Both
+  do nothing unless overridden.
 
 ### Changed
 

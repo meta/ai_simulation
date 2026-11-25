@@ -49,6 +49,7 @@ class Endpoint : public FlexNode, public IPortObserver {
   void onPingReceived(const PacketPtr& pkt);
   void onPacketSent(EthernetPort& ethPort, const PacketPtr& pkt) override;
   void onLinkUp(EthernetPort* ethPort);
+  void onChannelStateChanged(EthernetPort& ethPort) override;
 
   /**
    * Handle packet drops on the send path (queue overflow).

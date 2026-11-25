@@ -411,6 +411,16 @@ class Transport {
     // Default: no action
   }
 
+  /**
+   * The channel state of one of the NIC's ports changed, to UP or DOWN. A port
+   * that goes DOWN reports this before it drops its queued frames. A transport
+   * that caches anything derived from port liveness overrides this to drop the
+   * cache; the default does nothing.
+   *
+   * @param ethPort  The port whose state changed.
+   */
+  virtual void onEgressPortStateChanged(EthernetPort* /* ethPort */) {}
+
   // A QP that has finished transmitting, with its completion time and a debug
   // hint for re-running it.
   struct CompletedQp {

@@ -17,7 +17,8 @@ namespace packsim {
 class EthernetPort;
 
 /**
- * What an `EthernetPort` tells the layer above it about each frame.
+ * What an `EthernetPort` tells the layer above it about each frame and about
+ * its channel state.
  *
  * One observer per port, installed with `EthernetPort::setObserver`.
  * The observer must outlive the port.
@@ -26,8 +27,8 @@ class EthernetPort;
  * with no way to deliver a frame upward is a wiring error, not a configuration.
  * The port delivers through `onPacketRcvdByMove`, which reports to
  * `onPacketRcvd` unless an observer that keeps the frame overrides it. The
- * other three default to doing nothing, which is what "optional diagnostic"
- * should look like in the type rather than in a convention.
+ * other four default to doing nothing, so an observer overrides only the
+ * events it acts on.
  *
  * Example usage:
  *
@@ -104,6 +105,15 @@ class IPortObserver {
       const PacketPtr& /* pkt */,
       uint8_t /* cos */,
       packsim::switches::thrift::PacketDropReason /* reason */) {}
+
+  /**
+   * The port's channel state changed, to UP or DOWN; `getChannelState()`
+   * returns the new state. A port that goes DOWN reports this before it drops
+   * its queued frames.
+   *
+   * @param ethPort  The port.
+   */
+  virtual void onChannelStateChanged(EthernetPort& /* ethPort */) {}
 };
 
 } // namespace packsim

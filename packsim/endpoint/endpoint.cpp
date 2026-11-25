@@ -625,6 +625,10 @@ void Endpoint::onLinkUp(EthernetPort* ethPort) {
   transport_->onLinkUp(ethPort);
 }
 
+void Endpoint::onChannelStateChanged(EthernetPort& ethPort) {
+  transport_->onEgressPortStateChanged(&ethPort);
+}
+
 bool Endpoint::isEgressPortLive(const uint16_t egressPort) const {
   if (!portIndex_.has_value()) {
     return true; // single-port: no alternative port, treat as up
