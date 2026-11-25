@@ -85,6 +85,17 @@ class INicDatapath {
    */
   [[nodiscard]] virtual std::optional<Time> reserveRx(
       const RxPacket& packet) = 0;
+
+  /**
+   * Whether reserveRx() can read the address of a packet's payload write. A
+   * transport may leave the address out of the packets it gives a datapath
+   * that answers false, and so skip the work of finding it.
+   *
+   * @return  True, unless the datapath never reads the address.
+   */
+  [[nodiscard]] virtual bool readsPayloadWriteAddresses() const noexcept {
+    return true;
+  }
 };
 
 } // namespace packsim

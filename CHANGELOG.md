@@ -103,6 +103,12 @@ on `main` has the detail.
   before it drops its queued frames, and the endpoint passes the change on to
   its transport, which can drop anything it caches from port liveness. Both
   do nothing unless overridden.
+- `INicDatapath::readsPayloadWriteAddresses()`, in
+  `packsim/nic/nic-datapath.h`: whether the datapath's `reserveRx()` can read
+  the address of a packet's payload write, so that a transport can skip
+  finding the address for a datapath that answers false. It answers true
+  unless overridden; `SimpleNicDatapath` answers true only when its NIC has a
+  write latency function.
 
 ### Changed
 

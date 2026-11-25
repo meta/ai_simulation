@@ -65,6 +65,10 @@ std::optional<Time> SimpleNicDatapath::reserveRx(const RxPacket& packet) {
       getPayloadWriteLatencyNsFn(*write.addr, write.bytes)));
 }
 
+bool SimpleNicDatapath::readsPayloadWriteAddresses() const noexcept {
+  return static_cast<bool>(latencyFns_.getPayloadWriteLatencyNsFn);
+}
+
 SimpleMemory SimpleNicDatapath::makeMemory(
     const packsim::thrift::NicConfig& nicConfig) {
   const double memoryBytesPerNs = *nicConfig.readGbps() / 8.0;

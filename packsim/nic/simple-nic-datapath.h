@@ -99,6 +99,10 @@ class SimpleNicDatapath final : public INicDatapath {
    */
   [[nodiscard]] std::optional<Time> reserveRx(const RxPacket& packet) override;
 
+  // True when there is a write latency function, the only reader of a
+  // payload write's address.
+  [[nodiscard]] bool readsPayloadWriteAddresses() const noexcept override;
+
   /**
    * The flat memory a NIC's configuration describes, with nothing reserved:
    * the memory this datapath times its packets with, and what a transport

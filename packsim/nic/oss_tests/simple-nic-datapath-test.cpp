@@ -315,6 +315,44 @@ TEST_F(SimpleNicDatapathTest, ReadFunctionLeavesWritesFree) {
   EXPECT_FALSE(delay.has_value());
 }
 
+TEST_F(SimpleNicDatapathTest, AWriteFunctionReadsWriteAddresses) {
+  // Arrange
+  const SimpleNicDatapath datapath(
+      simCtx_,
+      makeNicConfig(),
+      {.getPayloadWriteLatencyNsFn = &getAddressLatencyNs});
+
+  // Act + Assert
+  EXPECT_TRUE(datapath.readsPayloadWriteAddresses());
+}
+
+TEST_F(
+    SimpleNicDatapathTest,
+    WithoutAWriteFunctionAWriteAddressChangesNothing) {
+  // Arrange: a configured write latency and a read function, neither of which
+  // reads a write's address.
+  const auto makeDatapath = [this] {
+    return SimpleNicDatapath(
+        simCtx_,
+        makeNicConfig(/*writeLatencyNs=*/200),
+        {.getPayloadReadLatencyNsFn = &getAddressLatencyNs});
+  };
+  SimpleNicDatapath withAddress = makeDatapath();
+  SimpleNicDatapath withoutAddress = makeDatapath();
+
+  // Act
+  const std::optional<Time> delayWithAddress =
+      withAddress.reserveRx(makeWrite(kPayloadBytes, kAddr));
+  const std::optional<Time> delayWithoutAddress =
+      withoutAddress.reserveRx(makeWrite(kPayloadBytes));
+
+  // Assert
+  EXPECT_FALSE(withAddress.readsPayloadWriteAddresses());
+  ASSERT_TRUE(delayWithAddress.has_value());
+  ASSERT_TRUE(delayWithoutAddress.has_value());
+  EXPECT_EQ(delayWithAddress->getFs(), delayWithoutAddress->getFs());
+}
+
 TEST_F(SimpleNicDatapathTest, NegativeWriteLatencyIsRejected) {
   // Arrange
   const packsim::thrift::NicConfig nicConfig =
