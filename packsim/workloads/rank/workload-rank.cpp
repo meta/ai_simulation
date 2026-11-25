@@ -1001,7 +1001,15 @@ void WorkloadRank::notifyReceived(const uint32_t fromRank) {
     return;
   }
   notifyRecvCount_[fromRank]++;
-  postRecvNotify(fromRank);
+  // A notification can reach a rank that has completed, since a rank that sends
+  // the peer no data need not wait for it. No receive replaces the released one
+  // then: in a schedule with workloadDags the node has unregistered the rank's
+  // QPs, so the receive would connect a new QP that the next iteration's rank
+  // takes over, with this receive, freed with this rank, at the head of its
+  // receive queue.
+  if (!completed_) {
+    postRecvNotify(fromRank);
+  }
   progress();
 }
 
@@ -1014,6 +1022,7 @@ void WorkloadRank::notifyAcked(const uint32_t toRank) {
 void WorkloadRank::onRankComplete(uint32_t workloadId, uint32_t rank) {
   XCHECK(onRankComplete_) << "no rank-complete subscriber registered on rank "
                           << rank;
+  completed_ = true;
   onRankComplete_(workloadId, rank);
 }
 

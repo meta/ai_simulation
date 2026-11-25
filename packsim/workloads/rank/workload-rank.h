@@ -113,9 +113,10 @@ class WorkloadRank {
   /**
    * Release the notify receive from `fromRank` that the transport completed.
    * Unless it completed in error, also count a notification from `fromRank`
-   * for checkNotifyReceived(), post the next notify receive and call
-   * progress(). After a receive completed in error the rank holds no notify
-   * receive from `fromRank`.
+   * for checkNotifyReceived(), post the next notify receive unless the rank
+   * has completed, and call progress(). Afterwards the rank holds no notify
+   * receive from `fromRank` if the receive completed in error or the rank has
+   * completed.
    *
    * @param fromRank            The peer whose notify receive completed.
    *
@@ -166,8 +167,9 @@ class WorkloadRank {
   }
 
  protected:
-  // Raise the rank-complete event. Protected because every concrete rank
-  // completes through it; the member is read nowhere else.
+  // Mark the rank completed, then raise the rank-complete event. Protected
+  // because every concrete rank completes through it; the callback member is
+  // read nowhere else.
   void onRankComplete(uint32_t workloadId, uint32_t rank);
 
   /**
@@ -553,6 +555,8 @@ class WorkloadRank {
   // The messages completed in error that reached this rank's handlers, as
   // recordCompletionStatus counts them.
   uint64_t messagesCompletedInError_{0};
+  // Set by onRankComplete(). A completed rank posts no further notify receive.
+  bool completed_{false};
 };
 
 } // namespace packsim

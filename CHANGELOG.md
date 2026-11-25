@@ -177,6 +177,8 @@ on `main` has the detail.
   `facebook/ai_simulation`. The job, the site's configuration and the
   repository's links now name `meta/ai_simulation`, and the site's host
   `https://meta.github.io`.
+- A workload rank no longer posts a new notify receive when a notification
+  reaches it after it has completed.
 
 ### Changed
 

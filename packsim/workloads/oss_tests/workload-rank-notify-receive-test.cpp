@@ -46,6 +46,11 @@ class IdleRank : public WorkloadRank {
   bool complete() override {
     return true;
   }
+
+  // Raise the rank-complete event, as a rank does once its work is done.
+  void finish() {
+    onRankComplete(workloadId_, rank_);
+  }
 };
 
 /**
@@ -137,6 +142,27 @@ TEST_F(WorkloadRankNotifyReceiveTest, ASuccessfulReceiveIsCountedAndReplaced) {
 
   // Assert
   EXPECT_EQ(receivesPosted_, 2u);
+  EXPECT_TRUE(rank_->checkNotifyReceived(kPeer));
+}
+
+// A peer's notification can reach a rank that has completed. The rank counts
+// it but posts no notify receive in its place: in a schedule with workloadDags
+// the node has unregistered the completed rank's QPs, and the receive would
+// connect a QP that the next iteration's rank takes over.
+TEST_F(
+    WorkloadRankNotifyReceiveTest,
+    ACompletedRankCountsALateNotificationButPostsNoReceive) {
+  // Arrange
+  rank_->finish();
+  ASSERT_EQ(receivesPosted_, 1u) << "the constructor posts one";
+  notifyReceive().completionStatus = Message::CompletionStatus::SUCCESS;
+
+  // Act
+  rank_->notifyReceived(kPeer);
+
+  // Assert
+  EXPECT_EQ(receivesPosted_, 1u);
+  EXPECT_TRUE(rank_->recvNotifyMessages_.at(kPeer).empty());
   EXPECT_TRUE(rank_->checkNotifyReceived(kPeer));
 }
 
