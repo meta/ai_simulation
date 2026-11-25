@@ -592,9 +592,9 @@ class Transport {
   INicDatapath* FOLLY_NULLABLE sharedNicDatapath_{nullptr};
   uint64_t nicBps_;
 
-  // Send a packet through the function the owner registered. Nothing invokes
-  // sendPacketFn_ directly; this is its only reader and it asserts the owner
-  // wired one -- a transport with no way to reach the wire is a wiring bug.
+  // Send a packet through the function the owner registered. Nothing else
+  // invokes sendPacketFn_, and this asserts the owner wired one -- a transport
+  // with no way to reach the wire is a wiring bug.
   bool sendPacketFn(const PacketPtr& pkt) const {
     XCHECK(sendPacketFn_) << "no send-packet function registered";
     return sendPacketFn_(pkt);
