@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -51,6 +52,32 @@ class Tracer {
       const std::string& category,
       const std::string& name,
       const std::function<double()>& getVal);
+  /**
+   * Whether logPeriodicConditional() would schedule a series of `category`:
+   * the category has an interval in the conditional map, or
+   * --all_conditional_traces_interval_us is not 0.
+   *
+   * @param category  A conditional-trace category, e.g. "transport-qwnd".
+   *
+   * @return          True when such a series would be scheduled.
+   * @throw std::runtime_error if the tracer has no conditional map, as
+   *        logPeriodicConditional() does.
+   */
+  [[nodiscard]] bool isConditionalTraceEnabled(
+      const std::string& category) const;
+  /**
+   * Whether isConditionalTraceEnabled() holds for some category that starts
+   * with `categoryPrefix`, so that a caller can skip building a family of
+   * series of which none would be scheduled.
+   *
+   * @param categoryPrefix  e.g. "transport-".
+   *
+   * @return                True when a series of some such category would be
+   *                        scheduled.
+   * @throw std::runtime_error if the tracer has no conditional map.
+   */
+  [[nodiscard]] bool anyConditionalTraceEnabled(
+      const std::string& categoryPrefix) const;
   /**
    * Trace `getVal()` under `name` every `interval`, starting at the next
    * multiple of `interval`, or now when the current time is one.
@@ -99,6 +126,11 @@ class Tracer {
   }
 
  private:
+  // The interval at which logPeriodicConditional() traces a series of
+  // `category`, or nullopt when it traces none. Needs a conditional map.
+  [[nodiscard]] std::optional<Time> getConditionalInterval(
+      const std::string& category) const;
+
   SimContext* const simCtx_;
   ConditionalMap* const conditionalMap_{nullptr};
   folly::F14FastMap<std::string, std::vector<TraceValue>> traces_;

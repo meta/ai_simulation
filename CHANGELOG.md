@@ -91,6 +91,11 @@ on `main` has the detail.
   transport may sample the one-way latency of the message's packets.
   `WorkloadRank::notify` clears it, so that the packets of a notify, which
   carry no data of their own, add no latency samples.
+- `Tracer::isConditionalTraceEnabled(category)` and
+  `Tracer::anyConditionalTraceEnabled(categoryPrefix)`, in
+  `packsim/kernel/trace.h`: whether `logPeriodicConditional()` would schedule a
+  series of the category, or of some category that starts with the prefix, so
+  that a caller can skip building series that would never be traced.
 
 ### Changed
 

@@ -5,12 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 #include <folly/container/F14Map.h>
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
+#include <gflags/gflags.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -18,6 +21,8 @@
 #include "packsim/kernel/sim-context.h"
 #include "packsim/kernel/time.h"
 #include "packsim/kernel/trace.h"
+
+DECLARE_uint32(all_conditional_traces_interval_us);
 
 namespace packsim {
 namespace {
@@ -325,6 +330,20 @@ TEST_F(TracerTest, ConditionalTraceWithoutMapThrows) {
           HasSubstr("no conditional map was provided")));
 }
 
+TEST_F(TracerTest, IsConditionalTraceEnabledWithoutMapThrows) {
+  EXPECT_THAT(
+      [this] { std::ignore = tracer().isConditionalTraceEnabled("cat"); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("no conditional map was provided")));
+}
+
+TEST_F(TracerTest, AnyConditionalTraceEnabledWithoutMapThrows) {
+  EXPECT_THAT(
+      [this] { std::ignore = tracer().anyConditionalTraceEnabled("c"); },
+      ThrowsMessage<std::runtime_error>(
+          HasSubstr("no conditional map was provided")));
+}
+
 TEST_F(TracerTest, TryCancelPeriodicIgnoresUnknownName) {
   EXPECT_NO_THROW(tracer().tryCancelPeriodic("never-registered"));
 }
@@ -346,12 +365,44 @@ class ConditionalTracerTest : public ::testing::Test {
   // (trace.cpp: `Time::fromNs(it->second)`), so this is 1us expressed in ns.
   static constexpr uint64_t kConditionalIntervalNs = 1000;
 
-  const Tracer::ConditionalMap conditionalMap_{{"cc", kConditionalIntervalNs}};
+  // What the tests that set --all_conditional_traces_interval_us set it to,
+  // and the same interval in ns.
+  static constexpr uint32_t kFlagIntervalUs = 2;
+  static constexpr uint64_t kFlagIntervalNs = 2000;
+
+  // A category traced less often than kFlagIntervalUs.
+  static constexpr uint64_t kSlowIntervalNs = 5000;
+
+  const Tracer::ConditionalMap conditionalMap_{
+      {"cc", kConditionalIntervalNs},
+      {"slow", kSlowIntervalNs}};
   Scheduler scheduler_;
   SimContext ctx_{&scheduler_, "conditional", /*seed=*/0, &conditionalMap_};
 
   Tracer& tracer() {
     return ctx_.tracer;
+  }
+
+  /**
+   * Trace a series of `category` until kSlowIntervalNs and give the time of its
+   * second sample; the first is at 0.
+   *
+   * @param category  The series' category.
+   *
+   * @return          The second sample's time in ns, or nullopt when the
+   *                  series took fewer than two samples.
+   */
+  std::optional<uint64_t> secondSampleNs(const std::string& category) {
+    ctx_.schedule(Time::fromNs(kSlowIntervalNs), [this] {
+      tracer().cancelPeriodic("series");
+    });
+    tracer().logPeriodicConditional(category, "series", [] { return 1.0; });
+    scheduler_.run();
+    const auto it = tracer().traces().find("series");
+    if (it == tracer().traces().end() || it->second.size() < 2) {
+      return std::nullopt;
+    }
+    return it->second.at(1).timeNs;
   }
 };
 
@@ -368,6 +419,51 @@ TEST_F(ConditionalTracerTest, DropsUnmappedCategory) {
   tracer().logPeriodicConditional("absent", "qwnd", []() { return 2.0; });
 
   EXPECT_TRUE(tracer().traces().empty());
+}
+
+TEST_F(ConditionalTracerTest, OnlyAMappedCategoryIsEnabled) {
+  EXPECT_TRUE(tracer().isConditionalTraceEnabled("cc"));
+  EXPECT_FALSE(tracer().isConditionalTraceEnabled("absent"));
+}
+
+TEST_F(ConditionalTracerTest, APrefixIsEnabledWhenAMappedCategoryStartsWithIt) {
+  EXPECT_TRUE(tracer().anyConditionalTraceEnabled("c"));
+  EXPECT_FALSE(tracer().anyConditionalTraceEnabled("absent-"));
+}
+
+TEST_F(ConditionalTracerTest, TheAllTracesFlagEnablesAnUnmappedCategory) {
+  const gflags::FlagSaver flagSaver;
+  FLAGS_all_conditional_traces_interval_us = kFlagIntervalUs;
+
+  EXPECT_TRUE(tracer().isConditionalTraceEnabled("absent"));
+}
+
+TEST_F(ConditionalTracerTest, TheAllTracesFlagEnablesAnUnmappedPrefix) {
+  const gflags::FlagSaver flagSaver;
+  FLAGS_all_conditional_traces_interval_us = kFlagIntervalUs;
+
+  EXPECT_TRUE(tracer().anyConditionalTraceEnabled("absent-"));
+}
+
+TEST_F(ConditionalTracerTest, AMappedIntervalShorterThanTheFlagsIsKept) {
+  const gflags::FlagSaver flagSaver;
+  FLAGS_all_conditional_traces_interval_us = kFlagIntervalUs;
+
+  EXPECT_EQ(secondSampleNs("cc"), kConditionalIntervalNs);
+}
+
+TEST_F(ConditionalTracerTest, TheFlagsIntervalReplacesALongerMappedOne) {
+  const gflags::FlagSaver flagSaver;
+  FLAGS_all_conditional_traces_interval_us = kFlagIntervalUs;
+
+  EXPECT_EQ(secondSampleNs("slow"), kFlagIntervalNs);
+}
+
+TEST_F(ConditionalTracerTest, TheFlagsIntervalTracesAnUnmappedCategory) {
+  const gflags::FlagSaver flagSaver;
+  FLAGS_all_conditional_traces_interval_us = kFlagIntervalUs;
+
+  EXPECT_EQ(secondSampleNs("absent"), kFlagIntervalNs);
 }
 
 TEST(ConditionalTracerConstructionTest, ZeroIntervalIsRejected) {

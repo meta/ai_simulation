@@ -7,6 +7,7 @@
 
 #include "packsim/kernel/trace.h"
 
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -99,24 +100,53 @@ void Tracer::logPeriodicConditional(
             name,
             category));
   }
-  const auto it = conditionalMap_->find(category);
-  if (it == conditionalMap_->end()) {
-    if (FLAGS_all_conditional_traces_interval_us != 0) {
-      const auto interval =
-          Time::fromUs(FLAGS_all_conditional_traces_interval_us);
-      startLogPeriodicSnapToInterval(name, interval, getVal);
-    }
-    return;
+  if (const std::optional<Time> interval = getConditionalInterval(category)) {
+    startLogPeriodicSnapToInterval(name, *interval, getVal);
   }
-  auto interval = Time::fromNs(it->second);
+}
+
+bool Tracer::isConditionalTraceEnabled(const std::string& category) const {
+  if (conditionalMap_ == nullptr) {
+    throw std::runtime_error(
+        fmt::format(
+            "Asked whether category {} is traced but no conditional map was provided",
+            category));
+  }
+  return getConditionalInterval(category).has_value();
+}
+
+bool Tracer::anyConditionalTraceEnabled(
+    const std::string& categoryPrefix) const {
+  if (conditionalMap_ == nullptr) {
+    throw std::runtime_error(
+        fmt::format(
+            "Asked whether a category starting with {} is traced but no conditional map was provided",
+            categoryPrefix));
+  }
+  if (FLAGS_all_conditional_traces_interval_us != 0) {
+    return true;
+  }
+  return std::ranges::any_of(
+      *conditionalMap_, [&categoryPrefix](const auto& entry) {
+        return entry.first.starts_with(categoryPrefix);
+      });
+}
+
+std::optional<Time> Tracer::getConditionalInterval(
+    const std::string& category) const {
+  std::optional<Time> interval;
+  if (const auto it = conditionalMap_->find(category);
+      it != conditionalMap_->end()) {
+    interval = Time::fromNs(it->second);
+  }
   if (FLAGS_all_conditional_traces_interval_us != 0) {
     const auto allTracesInterval =
         Time::fromUs(FLAGS_all_conditional_traces_interval_us);
-    if (allTracesInterval < interval) {
+    if (!interval.has_value() || allTracesInterval < *interval) {
       interval = allTracesInterval;
     }
   }
-  startLogPeriodicSnapToInterval(name, interval, getVal);
+  return interval;
 }
 
 void Tracer::registerSnapshot(
