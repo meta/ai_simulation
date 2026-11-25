@@ -122,6 +122,11 @@ struct Message { // @oss-enable
   bool isWrite{false};
   bool isWriteImm{false};
   bool isRead{false};
+  // Whether a transport may sample the one-way latency of this message's
+  // packets. A workload clears it for a message that carries no data of its
+  // own, such as a connection handshake, so that the samples describe data
+  // packets only.
+  bool samplePacketLatency{true};
   // How the transport completed this message. A transport without error
   // completions leaves it SUCCESS. It sits after the bools to fill their
   // padding, so it adds no size.

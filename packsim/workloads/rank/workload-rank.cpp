@@ -942,14 +942,23 @@ void WorkloadRank::notify(const uint32_t toRank) {
   // Travel on the NICs that own the notify QP: NIC 0 need not reach the peer,
   // e.g. when it only cables to a rack-local switch.
   const auto nicPair = getNotifyNicPair(toRank);
-  auto msg = sendWithQPN(
+  auto msg = makeSendWithQPN(
       toRank,
       kNotifyMsgSize,
       kNotifyConnectionMessageId,
       *qpnPair.local(),
       *qpnPair.remote(),
       /*endpointId=*/*nicPair.srcNicIdx(),
-      /*dstEndpointId=*/*nicPair.dstNicIdx());
+      /*dstEndpointId=*/*nicPair.dstNicIdx(),
+      /*sendDelayNs=*/0,
+      /*writeImm=*/false,
+      /*write=*/false,
+      /*writeImmData=*/0,
+      /*sendOrWriteData=*/0,
+      /*dataPtr=*/0);
+  // A notify carries no data of its own.
+  msg->samplePacketLatency = false;
+  submitSend(*msg);
   sendNotifyMessages_[toRank].emplace_back(std::move(msg));
 }
 

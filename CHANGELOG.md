@@ -87,6 +87,10 @@ on `main` has the detail.
   next ACK. Plain WRITEs need no credit. Off by default, since whether real
   networks and hardware behave this way is not yet clear and may need
   validating. Off, nothing changes.
+- `Message::samplePacketLatency`, in `packsim/transport/transport.h`: whether a
+  transport may sample the one-way latency of the message's packets.
+  `WorkloadRank::notify` clears it, so that the packets of a notify, which
+  carry no data of their own, add no latency samples.
 
 ### Changed
 
