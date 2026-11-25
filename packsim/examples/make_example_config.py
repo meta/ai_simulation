@@ -3,8 +3,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# pyre-strict
-
 """Write `incast-2host.json`, the example config beside this file.
 
 The example is two accelerators, each linked to one switch at 200 Gbps, and an
