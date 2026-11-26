@@ -64,6 +64,7 @@ LlrTraceFields LlrTraceFields::extractFrom(
 // `TRACE-PERIODIC` / `TRACE-BYTE` / `TRACE-ENQ` sites in `Llr`. The wire
 // driver's `TRACE-DRV` sites (`link-layer-scheduler.cpp`) key off the same
 // flag and include `wire-trace-flag.h` to say so.
+// @oss-disable
 // Fixed-column format suitable for `diff` between two runs (e.g., two builds
 // at the same seed with `--pdes_threads=1`). Off by default; turning on adds
 // O(packets) log lines, so only enable for small per-seed runs.
@@ -75,5 +76,5 @@ LlrTraceFields LlrTraceFields::extractFrom(
 FOLLY_GFLAGS_DEFINE_bool(
     packsim_trace_wire_events,
     false,
-    "Emit per-packet wire-event TRACE lines for diffing wire-event order "
-    "between two runs.");
+    "Emit a TRACE line per packet event, for example to diff the wire-event "
+    "order of two runs.");
