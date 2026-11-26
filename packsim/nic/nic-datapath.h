@@ -40,8 +40,9 @@ class INicDatapath {
     // for example 0x2000000.
     std::optional<uint64_t> addr;
     // The memory region a received payload lands in, when the transport knows
-    // one: the key of the receive buffer that a SEND lands in. A datapath may
-    // charge a write by the attributes of its region.
+    // one: the key of the receive buffer that a SEND lands in, or the remote
+    // key a WRITE names. A datapath may charge a write by the attributes of its
+    // region.
     std::optional<uint32_t> regionKey;
   };
 
