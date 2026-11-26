@@ -28,6 +28,7 @@
 #include "packsim/if/gen-cpp2/workload_types.h"
 // @oss-disable
 // @oss-disable
+// @oss-disable
 #include "packsim/workloads/builder.h"
 #include "packsim/workloads/dataflow.h"
 
@@ -896,6 +897,8 @@ void buildNicQPNMap(
 
 void fixupSimCfg(packsim::thrift::Simulation& simCfg, Random& random) {
   fixNicCfg(simCfg);
+  // @oss-disable
+      // @oss-disable
   // @oss-disable
       // @oss-disable
   validateAndFixWorkloads(simCfg, random);
