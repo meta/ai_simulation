@@ -60,9 +60,7 @@ std::optional<Time> SimpleNicDatapath::reserveRx(const RxPacket& packet) {
     return Time::fromNs(memory_.getWriteDelayNs(write.bytes, nowNs));
   }
   return Time::fromNs(memory_.getWriteDelayNs(
-      write.bytes,
-      nowNs,
-      getPayloadWriteLatencyNsFn(*write.addr, write.bytes)));
+      write.bytes, nowNs, getPayloadWriteLatencyNs(write)));
 }
 
 bool SimpleNicDatapath::readsPayloadWriteAddresses() const noexcept {
@@ -97,12 +95,16 @@ uint64_t SimpleNicDatapath::getPayloadReadLatencyNsFn(
   return latencyFns_.getPayloadReadLatencyNsFn(addr, sizeBytes);
 }
 
-uint64_t SimpleNicDatapath::getPayloadWriteLatencyNsFn(
-    const uint64_t addr,
-    const size_t sizeBytes) const {
+uint64_t SimpleNicDatapath::getPayloadWriteLatencyNs(
+    const PayloadAccess& write) const {
   XCHECK(latencyFns_.getPayloadWriteLatencyNsFn)
       << "no payload-write latency function given";
-  return latencyFns_.getPayloadWriteLatencyNsFn(addr, sizeBytes);
+  XCHECK(write.addr.has_value()) << "a payload write at no known address";
+  if (write.regionKey.has_value() && latencyFns_.getRegionWriteLatencyNsFn) {
+    return latencyFns_.getRegionWriteLatencyNsFn(
+        *write.addr, write.bytes, *write.regionKey);
+  }
+  return latencyFns_.getPayloadWriteLatencyNsFn(*write.addr, write.bytes);
 }
 
 } // namespace packsim

@@ -70,6 +70,14 @@ on `main` has the detail.
   `Transport::setNicDatapath`. `Transport::shareNicDatapath` makes the
   transports of one NIC, such as the planes of a `PerPlaneTransport`, reserve
   the same datapath. With `SimpleNicDatapath`, results do not change.
+- `INicDatapath::PayloadAccess::regionKey`, in `packsim/nic/nic-datapath.h`:
+  the memory region a received payload lands in, when the transport knows
+  one, for example the key of the receive buffer a SEND lands in.
+  `SimpleNicDatapath::PayloadLatencyFns::getRegionWriteLatencyNsFn`, in
+  `packsim/nic/simple-nic-datapath.h`, sets the fixed latency of a payload
+  write that names a region, by the region's key; the datapath reads it only
+  when it also has a write latency function. Without it, or for a write that
+  names no region, nothing changes.
 - `Message::writeAddr` in `packsim/transport/transport.h`: a RoCEv2 WRITE that
   carries one is handed to the receiving workload, once its last packet is in
   memory, as a message of its own with `isWrite`, `writeAddr`,

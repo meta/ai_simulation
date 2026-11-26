@@ -39,6 +39,10 @@ class INicDatapath {
     // Where the payload is in the NIC's memory, when the transport knows it,
     // for example 0x2000000.
     std::optional<uint64_t> addr;
+    // The memory region a received payload lands in, when the transport knows
+    // one: the key of the receive buffer that a SEND lands in. A datapath may
+    // charge a write by the attributes of its region.
+    std::optional<uint32_t> regionKey;
   };
 
   // A packet the transport hands to the NIC to send.
@@ -88,8 +92,9 @@ class INicDatapath {
 
   /**
    * Whether reserveRx() can read the address of a packet's payload write. A
-   * transport may leave the address out of the packets it gives a datapath
-   * that answers false, and so skip the work of finding it.
+   * transport may leave the address and the region key out of the packets it
+   * gives a datapath that answers false, and so skip the work of finding
+   * them.
    *
    * @return  True, unless the datapath never reads the address.
    */

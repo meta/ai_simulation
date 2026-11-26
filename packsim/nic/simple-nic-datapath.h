@@ -45,8 +45,15 @@ class SimpleNicDatapath final : public INicDatapath {
   using GetPayloadWriteLatencyNsFn =
       std::function<uint64_t(uint64_t addr, size_t sizeBytes)>;
 
-  // The fixed latencies of payload accesses by address. Either function may be
-  // empty, which keeps the flat latency for that kind of access.
+  // Fixed latency in ns of this NIC writing `sizeBytes` of received payload at
+  // `addr` in its own memory, into the memory region `regionKey` names.
+  // `sizeBytes` is never zero.
+  using GetRegionWriteLatencyNsFn = std::function<
+      uint64_t(uint64_t addr, size_t sizeBytes, uint32_t regionKey)>;
+
+  // The fixed latencies of payload accesses by address. An empty read or
+  // write function keeps the flat latency for that kind of access, and an
+  // empty region write function leaves every write to the write function.
   struct PayloadLatencyFns {
     // Takes the place of NicConfig.readLatencyNs for a read of at least one
     // byte whose address the transport knows.
@@ -55,6 +62,10 @@ class SimpleNicDatapath final : public INicDatapath {
     // byte whose address the transport knows. Given, it also makes the NIC
     // charge every received payload write.
     GetPayloadWriteLatencyNsFn getPayloadWriteLatencyNsFn;
+    // Takes the place of getPayloadWriteLatencyNsFn for a write that names a
+    // memory region (PayloadAccess::regionKey). Read only when
+    // getPayloadWriteLatencyNsFn is given.
+    GetRegionWriteLatencyNsFn getRegionWriteLatencyNsFn;
   };
 
   /**
@@ -93,9 +104,11 @@ class SimpleNicDatapath final : public INicDatapath {
    *                nor NicConfig.writeLatencyNs is set: then nothing is
    *                reserved and the payload counts as written on arrival. A
    *                write of zero bytes takes no fixed latency. A write of at
-   *                least one byte takes the write latency function's latency
-   *                when there is one and the address is known, and the NIC's
-   *                write latency otherwise.
+   *                least one byte at a known address, when there is a write
+   *                latency function, takes the region write function's
+   *                latency if it names a region and that function is given,
+   *                and the write latency function's otherwise. Any other write
+   *                of at least one byte takes the NIC's write latency.
    */
   [[nodiscard]] std::optional<Time> reserveRx(const RxPacket& packet) override;
 
@@ -124,12 +137,12 @@ class SimpleNicDatapath final : public INicDatapath {
       uint64_t addr,
       size_t sizeBytes) const;
 
-  // Fixed latency of one received payload write from the write latency
-  // function. reserveRx() is its only caller and calls it only when there is
-  // one.
-  [[nodiscard]] uint64_t getPayloadWriteLatencyNsFn(
-      uint64_t addr,
-      size_t sizeBytes) const;
+  // Fixed latency of one received payload write at a known address: from the
+  // region write function when the write names a region and there is one,
+  // else from the write latency function. reserveRx() is its only caller and
+  // calls it only when there is a write latency function.
+  [[nodiscard]] uint64_t getPayloadWriteLatencyNs(
+      const PayloadAccess& write) const;
 
   const SimContext& simCtx_;
   // Whether a received payload write is charged: there is a write latency

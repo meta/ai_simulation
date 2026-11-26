@@ -300,6 +300,61 @@ TEST_F(SimpleNicDatapathTest, WriteAtAKnownAddressTakesTheFunctionsLatency) {
   EXPECT_EQ(delay->getFs(), nsToFs(kAddressLatencyNs + kPayloadBytes));
 }
 
+TEST_F(SimpleNicDatapathTest, WriteIntoARegionTakesTheRegionFunctionsLatency) {
+  // Arrange
+  SimpleNicDatapath datapath(
+      simCtx_,
+      makeNicConfig(),
+      {.getPayloadWriteLatencyNsFn = &getAddressLatencyNs,
+       .getRegionWriteLatencyNsFn =
+           [](uint64_t /*addr*/, size_t /*sizeBytes*/, uint32_t regionKey) {
+             return uint64_t{1000} + regionKey;
+           }});
+  INicDatapath::RxPacket packet = makeWrite(kPayloadBytes, kAddr);
+  packet.payloadWrite->regionKey = 5;
+
+  // Act
+  const std::optional<Time> delay = datapath.reserveRx(packet);
+
+  // Assert
+  ASSERT_TRUE(delay.has_value());
+  EXPECT_EQ(delay->getFs(), nsToFs(1005 + kPayloadBytes));
+}
+
+TEST_F(SimpleNicDatapathTest, WriteIntoNoRegionKeepsTheWriteFunction) {
+  // Arrange
+  SimpleNicDatapath datapath(
+      simCtx_,
+      makeNicConfig(),
+      {.getPayloadWriteLatencyNsFn = &getAddressLatencyNs,
+       .getRegionWriteLatencyNsFn = [](uint64_t, size_t, uint32_t) {
+         return uint64_t{1000};
+       }});
+
+  // Act
+  const std::optional<Time> delay =
+      datapath.reserveRx(makeWrite(kPayloadBytes, kAddr));
+
+  // Assert
+  ASSERT_TRUE(delay.has_value());
+  EXPECT_EQ(delay->getFs(), nsToFs(kAddressLatencyNs + kPayloadBytes));
+}
+
+TEST_F(SimpleNicDatapathTest, RegionFunctionAloneLeavesWritesFree) {
+  // Arrange
+  SimpleNicDatapath datapath(
+      simCtx_,
+      makeNicConfig(),
+      {.getRegionWriteLatencyNsFn = [](uint64_t, size_t, uint32_t) {
+        return uint64_t{1000};
+      }});
+  INicDatapath::RxPacket packet = makeWrite(kPayloadBytes, kAddr);
+  packet.payloadWrite->regionKey = 5;
+
+  // Act + Assert
+  EXPECT_EQ(datapath.reserveRx(packet), std::nullopt);
+}
+
 TEST_F(SimpleNicDatapathTest, ReadFunctionLeavesWritesFree) {
   // Arrange
   SimpleNicDatapath datapath(
