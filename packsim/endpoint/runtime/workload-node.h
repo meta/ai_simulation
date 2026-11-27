@@ -182,6 +182,14 @@ class WorkloadNode : public FlexNode {
       const uint32_t rank,
       const uint32_t iteration = 1);
 
+  // Whether every rank pair of the simulation's workloads is listed
+  // identically at its two ends (QpListing::check); passed to every rank this
+  // node builds. False until set.
+  void setEveryRankPairListedIdentically(
+      const bool isListedIdentically) noexcept {
+    isEveryRankPairListedIdentically_ = isListedIdentically;
+  }
+
   /**
    * Eagerly create a socket (QP) on the specified endpoint.
    * Triggers the existing transport-state construction and QP registration
@@ -440,6 +448,9 @@ class WorkloadNode : public FlexNode {
       nullptr};
 
   bool enablePerMessageTracking_{false};
+
+  // See setEveryRankPairListedIdentically.
+  bool isEveryRankPairListedIdentically_{false};
 
   std::unique_ptr<MessageTracker> messageTracker_;
 };

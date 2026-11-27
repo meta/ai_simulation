@@ -44,6 +44,30 @@ class PermutationRank : public WorkloadRank {
   void sendMsgs();
   void sendNotify();
   void validateDstRanks(const std::vector<uint32_t>& dstRanks);
+
+  /**
+   * Choose the data-QP index of each receive this rank posts. When every rank
+   * pair of the simulation is listed identically at its two ends, they follow
+   * the sender's round-robin over the incoming rank pair's data QPs, so each
+   * chunk's receive and send meet on one QP; otherwise they keep the
+   * round-robin over the outgoing pair's count.
+   *
+   * @param numMsgs  The receives to post, one per chunk.
+   *
+   * @return         One index per chunk, for recvWithQPIndex.
+   */
+  std::vector<uint32_t> getRecvQpIndices(uint32_t numMsgs) const;
+
+  /**
+   * Round-robin chunks over a rank pair's data QPs from index 0, as the
+   * sender does.
+   *
+   * @param numQps   The data QPs to spread over; 0 puts every chunk on 0.
+   * @param numMsgs  The chunks.
+   *
+   * @return         One index per chunk, e.g. {0, 1, 0, 1} for 2 QPs.
+   */
+  std::vector<uint32_t> spreadOverQps(uint32_t numQps, uint32_t numMsgs) const;
 };
 
 } // namespace packsim

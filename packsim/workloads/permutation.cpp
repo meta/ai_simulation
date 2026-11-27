@@ -55,11 +55,11 @@ void PermutationRank::run() {
     return;
   }
   const uint32_t maxMsgSize = ceilDivide32(sendSize_, numChunks_);
+  const std::vector<uint32_t> recvQpIndices = isNicAwareModeActive()
+      ? getRecvQpIndices(ceilDivide32(sendSize_, maxMsgSize))
+      : std::vector<uint32_t>{};
   uint64_t rem = sendSize_;
   uint32_t chunkId = 0;
-  uint32_t qpNumToUse = chunkId;
-  const auto numQps = getTotalDataQPCount(dstRank_);
-  // @oss-disable
   while (rem > 0) {
     const uint32_t msgSize =
         rem < maxMsgSize ? static_cast<uint32_t>(rem) : maxMsgSize;
@@ -68,11 +68,10 @@ void PermutationRank::run() {
     // otherwise fall back to legacy single-QP mode
     std::unique_ptr<Message> recvMsg;
     if (isNicAwareModeActive()) {
-      // @oss-disable
+      const uint32_t qpNumToUse = recvQpIndices.at(chunkId);
       XLOGF(
           DBG, "recvWithQPIndex using QP {} for chunk {}", qpNumToUse, chunkId);
       recvMsg = recvWithQPIndex(srcRank_, msgSize, chunkId, qpNumToUse);
-      qpNumToUse = (qpNumToUse + 1) % numQps;
     } else {
       recvMsg = recv(srcRank_, msgSize, chunkId);
     }
@@ -182,6 +181,28 @@ uint64_t PermutationRank::getExpectedBytes() {
 
 bool PermutationRank::complete() {
   return recvMsgs_.empty() && sendMsgs_.empty() && notifyRcvd_;
+}
+
+std::vector<uint32_t> PermutationRank::getRecvQpIndices(
+    const uint32_t numMsgs) const {
+  const uint32_t peer =
+      isEveryRankPairListedIdentically() ? srcRank_ : dstRank_;
+  return spreadOverQps(getTotalDataQPCount(peer), numMsgs);
+}
+
+std::vector<uint32_t> PermutationRank::spreadOverQps(
+    const uint32_t numQps,
+    const uint32_t numMsgs) const {
+  std::vector<uint32_t> qpIndices;
+  qpIndices.reserve(numMsgs);
+  uint32_t qpNumToUse = 0;
+  // @oss-disable
+  for (uint32_t chunkId = 0; chunkId < numMsgs; ++chunkId) {
+    // @oss-disable
+    qpIndices.emplace_back(qpNumToUse);
+    qpNumToUse = numQps == 0 ? 0 : (qpNumToUse + 1) % numQps;
+  }
+  return qpIndices;
 }
 
 // validate the given matrix is correct

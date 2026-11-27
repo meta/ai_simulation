@@ -59,6 +59,7 @@
 #include "packsim/util/packsim-logger.h"
 #include "packsim/util/sim-fix.h"
 // @oss-disable
+#include "packsim/workloads/rank/qp-listing.h"
 // @oss-disable
 
 DEFINE_uint64(
@@ -99,6 +100,18 @@ PackSimSimulation::~PackSimSimulation() {
 }
 
 namespace {
+// Whether a workload, or a batch child of it at any depth, is a permutation.
+bool hasPermutation(const packsim::workload::thrift::Workload& workload) {
+  const auto& config = *workload.config();
+  if (config.getType() ==
+      packsim::workload::thrift::WorkloadSpecificConfig::Type::permutation) {
+    return true;
+  }
+  return config.getType() ==
+      packsim::workload::thrift::WorkloadSpecificConfig::Type::batch &&
+      std::ranges::any_of(*config.batch()->children(), hasPermutation);
+}
+
 // Share of the expected bytes delivered, 1 when none are expected.
 double completionFractionOf(
     const uint64_t bytesRcvd,
@@ -206,6 +219,25 @@ void PackSimSimulation::buildWorkloadRanks() {
   uint32_t builtRanks = 0;
   folly::F14FastSet<std::string> wkldNames;
   folly::F14FastSet<uint32_t> wkldIds;
+
+  // Only permutations read the result, so a run without one skips the check.
+  const auto& workloads = *simCfg_->newWorkloadSchedule()->workloads();
+  if (std::ranges::any_of(workloads, hasPermutation)) {
+    const auto qpListing = QpListing::check(workloads);
+    if (const auto& mismatch = qpListing.firstMismatch; mismatch.has_value()) {
+      XLOGF(
+          WARN,
+          "Workload {}: rank pair {} -> {} is not listed identically at its two ends (rank pairs listed differently in this simulation: {}), so permutations spread their receives over the data queue pairs of the rank pair they send on",
+          mismatch->workloadName,
+          mismatch->srcRank,
+          mismatch->dstRank,
+          qpListing.numMismatchedRankPairs);
+    }
+    for (const auto& node : flexTopo_.getAllWorkloadNodes()) {
+      node->setEveryRankPairListedIdentically(
+          qpListing.isEveryRankPairListedIdentically);
+    }
+  }
 
   // @oss-disable
       // @oss-disable

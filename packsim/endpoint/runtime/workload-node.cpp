@@ -294,6 +294,7 @@ void WorkloadNode::buildWorkloadRank(
   const auto [smcb, rmcb, rccb] = genCallbacks();
   auto w = packsim::buildWorkloadRank(
       simCtx_, workloadId, wCfg, rank, smcb, rmcb, rccb);
+  w->setEveryRankPairListedIdentically(isEveryRankPairListedIdentically_);
   w->setIteration(iteration);
   onRankBuilt(*w, wCfg);
   simCtx_->dataRcvdExpected += w->getExpectedBytes();

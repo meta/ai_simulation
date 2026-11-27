@@ -19,6 +19,7 @@
 #include "packsim/util/sim-fix.h"
 #include "packsim/workloads/all-to-all.h"
 #include "packsim/workloads/builder.h"
+#include "packsim/workloads/rank/qp-listing.h"
 
 namespace packsim {
 
@@ -82,8 +83,16 @@ void WorkloadRankTestHarness::buildRanks() {
   auto rccb = [this](uint32_t workloadId, uint32_t rank) {
     rankComplete(workloadId, rank);
   };
+  // As the simulation does for its workloads, with this one as the only one.
+  const bool isEveryRankPairListedIdentically =
+      QpListing::check({workCfg_}).isEveryRankPairListedIdentically;
   for (uint32_t i = 0; i < *workCfg_.numEndpoints(); i++) {
     auto w = buildWorkloadRank(&simCtx_, 0, workCfg_, i, smcb, rmcb, rccb);
+    if (w == nullptr) {
+      throw std::runtime_error(
+          fmt::format("Workload {} built no rank {}", *workCfg_.name(), i));
+    }
+    w->setEveryRankPairListedIdentically(isEveryRankPairListedIdentically);
     scheduler_.scheduleAfter(
         &simCtx_, Time::fromNs(startTimeNs), &WorkloadRank::run, w.get());
     ranks_.emplace_back(std::move(w));

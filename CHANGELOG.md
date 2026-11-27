@@ -186,6 +186,16 @@ on `main` has the detail.
 
 ### Fixed
 
+- A `Permutation` workload's receives (`packsim/if/workload.thrift`) now use
+  the data queue pair count of the incoming rank pair, fixing runs that stalled
+  when a rank's incoming and outgoing rank pairs had different numbers of data
+  queue pairs. The receives were spread over the outgoing pair's count, so a
+  chunk could arrive on a queue pair with no receive posted for it. When a rank
+  pair of any workload in the simulation is listed differently at its two ends
+  (other queue pairs, a queue pair listed twice, or NIC pairs in another
+  order), permutations keep the outgoing pair's count and the run logs one
+  warning naming the first such rank pair. Runs in which every permutation
+  rank completed before give the same results.
 - A double binary tree `AllReduce` (`packsim/if/workload.thrift`) now sends
   each peer every up-tree chunk it owes that peer before any down-tree chunk.
   When a rank started late or a notify was delayed, a down-tree chunk could go

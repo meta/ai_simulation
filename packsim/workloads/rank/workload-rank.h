@@ -136,6 +136,24 @@ class WorkloadRank {
     return parent_;
   }
 
+  /**
+   * Whether every rank pair of every workload in the simulation is listed
+   * identically at its two ends (see QpListing). A batch child answers for
+   * its root.
+   *
+   * @return  What the workload node set; false until it sets it.
+   */
+  bool isEveryRankPairListedIdentically() const noexcept {
+    return parent_ != nullptr ? parent_->isEveryRankPairListedIdentically()
+                              : isEveryRankPairListedIdentically_;
+  }
+
+  // Set from QpListing::check over the simulation's workloads, before run().
+  void setEveryRankPairListedIdentically(
+      const bool isListedIdentically) noexcept {
+    isEveryRankPairListedIdentically_ = isListedIdentically;
+  }
+
   SimContext* getSimCtx() const noexcept {
     return simCtx_;
   }
@@ -557,6 +575,8 @@ class WorkloadRank {
   uint64_t messagesCompletedInError_{0};
   // Set by onRankComplete(). A completed rank posts no further notify receive.
   bool completed_{false};
+  // See isEveryRankPairListedIdentically.
+  bool isEveryRankPairListedIdentically_{false};
 };
 
 } // namespace packsim
